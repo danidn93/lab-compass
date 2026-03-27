@@ -1,0 +1,130 @@
+import React, { useState, useEffect } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
+import { supabase } from '@/lib/supabaseClient';
+import { useAuth } from '@/contexts/AuthContext'; // Importamos el contexto
+import {
+  LayoutDashboard, Package, TestTubes, Users, ClipboardList, FileText, Settings, FlaskConical, UserCog
+} from 'lucide-react';
+import {
+  Sidebar, SidebarContent, SidebarGroup, SidebarGroupContent, SidebarGroupLabel,
+  SidebarMenu, SidebarMenuButton, SidebarMenuItem, SidebarHeader, useSidebar,
+} from '@/components/ui/sidebar';
+
+// Definimos la estructura de los items con una propiedad opcional de rol
+const navItems = [
+  { title: 'Dashboard', url: '/admin', icon: LayoutDashboard },
+  { title: 'Inventario', url: '/admin/inventory', icon: Package },
+  { title: 'Pruebas', url: '/admin/tests', icon: TestTubes },
+  { title: 'Pacientes', url: '/admin/patients', icon: Users },
+  { title: 'Órdenes', url: '/admin/orders', icon: ClipboardList },
+  { title: 'Resultados', url: '/admin/results', icon: FileText },
+  // Este es el nuevo módulo protegido
+  { title: 'Usuarios', url: '/admin/usuarios', icon: UserCog, adminOnly: true },
+  { title: 'Configuración', url: '/admin/settings', icon: Settings },
+];
+
+export function AppSidebar() {
+  const { state } = useSidebar();
+  const { user } = useAuth(); // Obtenemos el usuario y su rol
+  const collapsed = state === 'collapsed';
+  const location = useLocation();
+  const navigate = useNavigate();
+
+  const [labName, setLabName] = useState('BioAnalítica');
+  const [hasLowStock, setHasLowStock] = useState(false);
+
+  useEffect(() => {
+    fetchSidebarData();
+
+    const channel = supabase.channel('sidebar-updates')
+      .on('postgres_changes', { event: '*', table: 'configuracion_laboratorio' }, fetchSidebarData)
+      .on('postgres_changes', { event: '*', table: 'reactivos' }, fetchSidebarData)
+      .subscribe();
+
+    return () => { supabase.removeChannel(channel); };
+  }, []);
+
+  const fetchSidebarData = async () => {
+    try {
+      const { data: config } = await supabase
+        .from('configuracion_laboratorio')
+        .select('name')
+        .maybeSingle();
+      
+      if (config?.name) setLabName(config.name);
+
+      const { data: reagents } = await supabase
+        .from('reactivos')
+        .select('current_stock, min_stock');
+      
+      const lowStock = reagents?.some(r => r.current_stock <= (r.min_stock || 0));
+      setHasLowStock(!!lowStock);
+    } catch (error) {
+      console.error("Error cargando datos del sidebar:", error);
+    }
+  };
+
+  const isActive = (path: string) => {
+    if (path === '/admin') return location.pathname === '/admin';
+    return location.pathname.startsWith(path);
+  };
+
+  // Filtramos los items según el rol del usuario
+  const filteredNavItems = navItems.filter(item => {
+    if (item.adminOnly) {
+      return user?.role === 'admin';
+    }
+    return true;
+  });
+
+  return (
+    <Sidebar collapsible="icon">
+      <SidebarHeader className="p-4">
+        <div className="flex items-center gap-3">
+          <div className="w-9 h-9 rounded-xl gradient-clinical flex items-center justify-center shrink-0 shadow-sm">
+            <FlaskConical className="w-5 h-5 text-primary-foreground" />
+          </div>
+          {!collapsed && (
+            <div className="min-w-0">
+              <h2 className="font-display font-bold text-sm text-sidebar-primary-foreground truncate">
+                {labName}
+              </h2>
+              <p className="text-[10px] uppercase tracking-wider text-sidebar-foreground/50 font-medium">
+                {user?.role === 'admin' ? 'Administrador' : 'Laboratorista'}
+              </p>
+            </div>
+          )}
+        </div>
+      </SidebarHeader>
+
+      <SidebarContent>
+        <SidebarGroup>
+          <SidebarGroupLabel>Módulos</SidebarGroupLabel>
+          <SidebarGroupContent>
+            <SidebarMenu>
+              {filteredNavItems.map((item) => (
+                <SidebarMenuItem key={item.title}>
+                  <SidebarMenuButton
+                    onClick={() => navigate(item.url)}
+                    tooltip={item.title}
+                    className={isActive(item.url) ? 'bg-sidebar-accent text-sidebar-primary font-semibold' : 'hover:bg-sidebar-accent/50'}
+                  >
+                    <div className="relative">
+                      <item.icon className={`w-4 h-4 ${isActive(item.url) ? 'text-primary' : 'text-muted-foreground'}`} />
+                      
+                      {/* Alerta de inventario */}
+                      {item.title === 'Inventario' && hasLowStock && (
+                        <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-destructive animate-pulse" />
+                      )}
+                    </div>
+                    {!collapsed && <span>{item.title}</span>}
+                  </SidebarMenuButton>
+                </SidebarMenuItem>
+              ))}
+            </SidebarMenu>
+          </SidebarGroupContent>
+        </SidebarGroup>
+      </SidebarContent>
+    </Sidebar>
+  );
+}
