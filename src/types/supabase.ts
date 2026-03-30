@@ -29,11 +29,15 @@ export type Database = {
           certificado_thumbprint: string | null
           contribuyente_especial: string | null
           created_at: string
+          direccion_establecimiento: string | null
+          direccion_matriz: string | null
           establecimiento: string
+          forma_pago_sri: string | null
           id: string
           laboratorio_id: string
           nombre_comercial: string | null
           obligado_contabilidad: boolean
+          porcentaje_iva: number | null
           punto_emision: string
           razon_social: string
           ruc: string
@@ -54,11 +58,15 @@ export type Database = {
           certificado_thumbprint?: string | null
           contribuyente_especial?: string | null
           created_at?: string
+          direccion_establecimiento?: string | null
+          direccion_matriz?: string | null
           establecimiento?: string
+          forma_pago_sri?: string | null
           id?: string
           laboratorio_id: string
           nombre_comercial?: string | null
           obligado_contabilidad?: boolean
+          porcentaje_iva?: number | null
           punto_emision?: string
           razon_social: string
           ruc: string
@@ -79,11 +87,15 @@ export type Database = {
           certificado_thumbprint?: string | null
           contribuyente_especial?: string | null
           created_at?: string
+          direccion_establecimiento?: string | null
+          direccion_matriz?: string | null
           establecimiento?: string
+          forma_pago_sri?: string | null
           id?: string
           laboratorio_id?: string
           nombre_comercial?: string | null
           obligado_contabilidad?: boolean
+          porcentaje_iva?: number | null
           punto_emision?: string
           razon_social?: string
           ruc?: string
@@ -111,6 +123,7 @@ export type Database = {
         Row: {
           address: string
           email: string | null
+          firma: string | null
           health_registry: string
           id: string
           legal_name: string | null
@@ -120,11 +133,13 @@ export type Database = {
           phone: string
           ruc: string
           schedule: string
+          sello: string | null
           updated_at: string | null
         }
         Insert: {
           address: string
           email?: string | null
+          firma?: string | null
           health_registry: string
           id?: string
           legal_name?: string | null
@@ -134,11 +149,13 @@ export type Database = {
           phone: string
           ruc: string
           schedule: string
+          sello?: string | null
           updated_at?: string | null
         }
         Update: {
           address?: string
           email?: string | null
+          firma?: string | null
           health_registry?: string
           id?: string
           legal_name?: string | null
@@ -148,6 +165,7 @@ export type Database = {
           phone?: string
           ruc?: string
           schedule?: string
+          sello?: string | null
           updated_at?: string | null
         }
         Relationships: []
@@ -174,6 +192,7 @@ export type Database = {
           tipo_comprobante: string
           total: number
           updated_at: string
+          xml_autorizado_path: string | null
           xml_firmado_path: string | null
           xml_generado_path: string | null
         }
@@ -198,6 +217,7 @@ export type Database = {
           tipo_comprobante?: string
           total?: number
           updated_at?: string
+          xml_autorizado_path?: string | null
           xml_firmado_path?: string | null
           xml_generado_path?: string | null
         }
@@ -222,6 +242,7 @@ export type Database = {
           tipo_comprobante?: string
           total?: number
           updated_at?: string
+          xml_autorizado_path?: string | null
           xml_firmado_path?: string | null
           xml_generado_path?: string | null
         }
@@ -341,22 +362,40 @@ export type Database = {
       }
       orden_detalle: {
         Row: {
+          codigo_porcentaje_iva: string
           id: string
+          objeto_impuesto: string
           order_id: string
+          porcentaje_iva: number
           price: number
+          subtotal_sin_impuesto: number | null
           test_id: string
+          total_linea: number | null
+          valor_iva: number | null
         }
         Insert: {
+          codigo_porcentaje_iva?: string
           id?: string
+          objeto_impuesto?: string
           order_id: string
+          porcentaje_iva?: number
           price: number
+          subtotal_sin_impuesto?: number | null
           test_id: string
+          total_linea?: number | null
+          valor_iva?: number | null
         }
         Update: {
+          codigo_porcentaje_iva?: string
           id?: string
+          objeto_impuesto?: string
           order_id?: string
+          porcentaje_iva?: number
           price?: number
+          subtotal_sin_impuesto?: number | null
           test_id?: string
+          total_linea?: number | null
+          valor_iva?: number | null
         }
         Relationships: [
           {
@@ -378,35 +417,75 @@ export type Database = {
       ordenes: {
         Row: {
           access_key: string
+          clave_acceso_sri: string | null
           code: string
           created_at: string | null
           date: string
+          factura_estado: string | null
+          factura_fecha_autorizacion: string | null
+          factura_id: string | null
+          factura_mensaje: string | null
+          factura_ride_pdf_path: string | null
+          factura_xml_autorizado_path: string | null
+          factura_xml_firmado_path: string | null
+          factura_xml_path: string | null
           id: string
+          numero_autorizacion_sri: string | null
+          numero_factura: string | null
           patient_id: string
           status: string
           total: number
         }
         Insert: {
           access_key: string
+          clave_acceso_sri?: string | null
           code: string
           created_at?: string | null
           date?: string
+          factura_estado?: string | null
+          factura_fecha_autorizacion?: string | null
+          factura_id?: string | null
+          factura_mensaje?: string | null
+          factura_ride_pdf_path?: string | null
+          factura_xml_autorizado_path?: string | null
+          factura_xml_firmado_path?: string | null
+          factura_xml_path?: string | null
           id?: string
+          numero_autorizacion_sri?: string | null
+          numero_factura?: string | null
           patient_id: string
           status?: string
           total?: number
         }
         Update: {
           access_key?: string
+          clave_acceso_sri?: string | null
           code?: string
           created_at?: string | null
           date?: string
+          factura_estado?: string | null
+          factura_fecha_autorizacion?: string | null
+          factura_id?: string | null
+          factura_mensaje?: string | null
+          factura_ride_pdf_path?: string | null
+          factura_xml_autorizado_path?: string | null
+          factura_xml_firmado_path?: string | null
+          factura_xml_path?: string | null
           id?: string
+          numero_autorizacion_sri?: string | null
+          numero_factura?: string | null
           patient_id?: string
           status?: string
           total?: number
         }
         Relationships: [
+          {
+            foreignKeyName: "ordenes_factura_id_fkey"
+            columns: ["factura_id"]
+            isOneToOne: false
+            referencedRelation: "facturas_electronicas"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "ordenes_patient_id_fkey"
             columns: ["patient_id"]
@@ -421,6 +500,7 @@ export type Database = {
           birth_date: string
           cedula: string
           created_at: string | null
+          direccion: string | null
           email: string | null
           id: string
           name: string
@@ -431,6 +511,7 @@ export type Database = {
           birth_date: string
           cedula: string
           created_at?: string | null
+          direccion?: string | null
           email?: string | null
           id?: string
           name: string
@@ -441,6 +522,7 @@ export type Database = {
           birth_date?: string
           cedula?: string
           created_at?: string | null
+          direccion?: string | null
           email?: string | null
           id?: string
           name?: string
@@ -516,24 +598,33 @@ export type Database = {
       }
       pruebas: {
         Row: {
+          codigo_porcentaje_iva: string
           created_at: string | null
           description: string | null
           id: string
           name: string
+          objeto_impuesto: string
+          porcentaje_iva: number
           price: number
         }
         Insert: {
+          codigo_porcentaje_iva?: string
           created_at?: string | null
           description?: string | null
           id?: string
           name: string
+          objeto_impuesto?: string
+          porcentaje_iva?: number
           price: number
         }
         Update: {
+          codigo_porcentaje_iva?: string
           created_at?: string | null
           description?: string | null
           id?: string
           name?: string
+          objeto_impuesto?: string
+          porcentaje_iva?: number
           price?: number
         }
         Relationships: []

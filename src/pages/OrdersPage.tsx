@@ -7,6 +7,14 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Textarea } from '@/components/ui/textarea';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import {
   Loader2,
   Plus,
@@ -16,9 +24,10 @@ import {
   Receipt,
   FileCode,
   RefreshCw,
+  UserPlus,
 } from 'lucide-react';
 import { toast } from 'sonner';
-import QRCode from "qrcode";
+import QRCode from 'qrcode';
 
 function safeNumber(value: any, fallback = 0): number {
   const n = Number(value);
@@ -42,23 +51,51 @@ function obtenerCodigoPorcentajeIva(porcentaje: number): string {
   throw new Error(`Tarifa IVA no soportada: ${p}%`);
 }
 
+type LabConfig = {
+  id?: string;
+  logo?: string | null;
+  name?: string | null;
+  owner?: string | null;
+  address?: string | null;
+  ruc?: string | null;
+  health_registry?: string | null;
+  phone?: string | null;
+  schedule?: string | null;
+  legal_name?: string | null;
+  email?: string | null;
+};
+
 export default function OrdersPage() {
   const [orders, setOrders] = useState<any[]>([]);
   const [patients, setPatients] = useState<any[]>([]);
   const [tests, setTests] = useState<any[]>([]);
+  const [labConfig, setLabConfig] = useState<LabConfig | null>(null);
+
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
+  const [creatingPatient, setCreatingPatient] = useState(false);
   const [checkingSri, setCheckingSri] = useState<string | null>(null);
 
   const [search, setSearch] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [invoiceDialogOpen, setInvoiceDialogOpen] = useState(false);
+  const [patientDialogOpen, setPatientDialogOpen] = useState(false);
   const [selectedOrder, setSelectedOrder] = useState<any>(null);
 
   const [selectedPatient, setSelectedPatient] = useState('');
   const [selectedTests, setSelectedTests] = useState<string[]>([]);
   const [patientSearch, setPatientSearch] = useState('');
   const [testSearch, setTestSearch] = useState('');
+
+  const [patientForm, setPatientForm] = useState({
+    name: '',
+    cedula: '',
+    phone: '',
+    email: '',
+    birth_date: '',
+    sex: 'M' as 'M' | 'F',
+    direccion: '',
+  });
 
   useEffect(() => {
     fetchInitialData();
@@ -67,7 +104,7 @@ export default function OrdersPage() {
   const fetchInitialData = async () => {
     setLoading(true);
 
-    const [o, p, t] = await Promise.all([
+    const [o, p, t, c] = await Promise.all([
       supabase
         .from('ordenes')
         .select(`
@@ -76,10 +113,7 @@ export default function OrdersPage() {
         `)
         .order('created_at', { ascending: false }),
 
-      supabase
-        .from('pacientes')
-        .select('*')
-        .order('name'),
+      supabase.from('pacientes').select('*').order('name'),
 
       supabase
         .from('pruebas')
@@ -88,11 +122,29 @@ export default function OrdersPage() {
           prueba_reactivos(*)
         `)
         .order('name'),
+
+      supabase
+        .from('configuracion_laboratorio')
+        .select(`
+          id,
+          logo,
+          name,
+          owner,
+          address,
+          ruc,
+          health_registry,
+          phone,
+          schedule,
+          legal_name,
+          email
+        `)
+        .maybeSingle(),
     ]);
 
     setOrders(o.data || []);
     setPatients(p.data || []);
     setTests(t.data || []);
+    setLabConfig(c.data || null);
     setLoading(false);
   };
 
@@ -107,7 +159,6 @@ export default function OrdersPage() {
 
   const filteredPatients = useMemo(() => {
     const q = patientSearch.trim().toLowerCase();
-
     if (!q) return [];
 
     return patients.filter((p) => {
@@ -121,7 +172,6 @@ export default function OrdersPage() {
 
   const filteredTestsForPicker = useMemo(() => {
     const q = testSearch.trim().toLowerCase();
-
     if (!q) return tests;
 
     return tests.filter((t) => {
@@ -171,6 +221,68 @@ export default function OrdersPage() {
     setPatientSearch('');
   };
 
+  const openCreatePatient = () => {
+    setPatientForm({
+      name: '',
+      cedula: '',
+      phone: '',
+      email: '',
+      birth_date: '',
+      sex: 'M',
+      direccion: '',
+    });
+    setPatientDialogOpen(true);
+  };
+
+  const handleSavePatient = async () => {
+    if (!patientForm.name.trim() || !patientForm.cedula.trim() || !patientForm.birth_date) {
+      toast.error('Nombre, cédula y fecha de nacimiento son obligatorios');
+      return;
+    }
+
+    try {
+      setCreatingPatient(true);
+
+      const payload = {
+        name: patientForm.name.trim(),
+        cedula: patientForm.cedula.trim(),
+        phone: patientForm.phone.trim() || null,
+        email: patientForm.email.trim() || null,
+        birth_date: patientForm.birth_date,
+        sex: patientForm.sex,
+        direccion: patientForm.direccion.trim() || null,
+      };
+
+      const { data, error } = await supabase
+        .from('pacientes')
+        .insert([payload])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      toast.success('Paciente registrado');
+
+      await fetchInitialData();
+
+      if (data?.id) {
+        setSelectedPatient(data.id);
+        setPatientSearch('');
+      }
+
+      setPatientDialogOpen(false);
+    } catch (error: any) {
+      toast.error(
+        'Error: ' +
+          (error.message?.includes('unique') || error.message?.includes('pacientes_cedula_key')
+            ? 'La cédula ya existe'
+            : error.message)
+      );
+    } finally {
+      setCreatingPatient(false);
+    }
+  };
+
   const handleCreate = async () => {
     if (!selectedPatient || selectedTests.length === 0) return;
 
@@ -183,7 +295,6 @@ export default function OrdersPage() {
     setCreating(true);
 
     const total = resumenTotales.total;
-
     const orderCode = generateOrderCode();
     const accessKey = generateAccessKey();
 
@@ -320,9 +431,7 @@ export default function OrdersPage() {
       if (data?.ok) {
         toast.success(data?.message || 'Factura autorizada correctamente');
       } else if (data?.sri_estado === 'EN_PROCESAMIENTO') {
-        toast.info(
-          data?.message || 'La factura aún sigue en procesamiento en el SRI'
-        );
+        toast.info(data?.message || 'La factura aún sigue en procesamiento en el SRI');
       } else {
         const sriDetalle = data?.sri_mensajes
           ?.map((m: any) =>
@@ -387,9 +496,7 @@ export default function OrdersPage() {
 
     const cleanPath = pdfPath.trim().replace(/^\/+/, '');
 
-    const { data } = supabase.storage
-      .from('facturas-pdf')
-      .getPublicUrl(cleanPath);
+    const { data } = supabase.storage.from('facturas-pdf').getPublicUrl(cleanPath);
 
     if (!data?.publicUrl) {
       toast.error('No se pudo obtener la URL pública del PDF RIDE');
@@ -407,9 +514,7 @@ export default function OrdersPage() {
 
     const cleanPath = xmlPath.trim().replace(/^\/+/, '');
 
-    const { data } = supabase.storage
-      .from('facturas-xml')
-      .getPublicUrl(cleanPath);
+    const { data } = supabase.storage.from('facturas-xml').getPublicUrl(cleanPath);
 
     if (!data?.publicUrl) {
       toast.error('No se pudo obtener la URL pública del XML');
@@ -454,44 +559,105 @@ export default function OrdersPage() {
       )
     );
 
-    // 🔥 URL REAL DEL PORTAL
     const portalUrl = `${window.location.origin}/portal?clave=${order.access_key}`;
 
-    // 🔥 GENERAR QR
     const qrDataUrl = await QRCode.toDataURL(portalUrl, {
       width: 180,
       margin: 1,
     });
 
-    const printWindow = window.open('', '_blank', 'width=300,height=900');
+    const logoHtml = labConfig?.logo
+      ? `
+        <div class="logo-wrap">
+          <img src="${labConfig.logo}" class="logo" alt="Logo laboratorio" />
+        </div>
+      `
+      : '';
+
+    const labName = labConfig?.name || 'LABORATORIO CLÍNICO';
+    const labOwner = labConfig?.owner || '';
+    const labAddress = labConfig?.address || '';
+    const labPhone = labConfig?.phone || '';
+    const labSchedule = labConfig?.schedule || '';
+    const labRuc = labConfig?.ruc || '';
+    const labReg = labConfig?.health_registry || '';
+
+    const printWindow = window.open('', '_blank', 'width=320,height=950');
     if (!printWindow) return;
 
     const ticketHTML = `
       <html>
         <head>
+          <title>Ticket de recepción</title>
           <style>
             @page { size: 58mm auto; margin: 0; }
+            * { box-sizing: border-box; }
             body {
-              font-family: 'Courier New', Courier, monospace;
+              font-family: Arial, Helvetica, sans-serif;
               width: 58mm;
-              padding: 5px;
-              font-size: 12px;
-              line-height: 1.2;
+              padding: 6px;
+              margin: 0;
+              font-size: 11px;
+              line-height: 1.25;
+              color: #000;
             }
             .center { text-align: center; }
-            .bold { font-weight: bold; }
-            .line { border-bottom: 1px dashed #000; margin: 5px 0; }
-            .flex { display: flex; justify-content: space-between; }
-            .small { font-size: 10px; word-break: break-word; }
+            .bold { font-weight: 700; }
+            .line { border-bottom: 1px dashed #000; margin: 6px 0; }
+            .flex { display: flex; justify-content: space-between; gap: 8px; }
+            .small { font-size: 9px; word-break: break-word; }
+            .tiny { font-size: 8px; word-break: break-word; }
             .qr { display: flex; justify-content: center; margin-top: 8px; }
-            img { width: 120px; height: 120px; }
+            .qr img { width: 110px; height: 110px; }
+            .logo-wrap {
+              display: flex;
+              justify-content: center;
+              margin-bottom: 4px;
+            }
+            .logo {
+              max-width: 90px;
+              max-height: 90px;
+              object-fit: contain;
+            }
+            .access-box {
+              border: 1px solid #000;
+              padding: 4px;
+              font-size: 15px;
+              font-weight: 700;
+              text-align: center;
+              letter-spacing: 1px;
+              margin-top: 4px;
+            }
+            .test-row {
+              display: flex;
+              justify-content: space-between;
+              gap: 6px;
+              margin-bottom: 2px;
+            }
+            .test-name {
+              flex: 1;
+              word-break: break-word;
+            }
+            .test-price {
+              white-space: nowrap;
+            }
           </style>
         </head>
 
         <body>
+          ${logoHtml}
 
-          <div class="center bold">LABORATORIO CLÍNICO</div>
-          <div class="center">Comprobante de Recepción</div>
+          <div class="center bold">${labName}</div>
+          ${labOwner ? `<div class="center small">${labOwner}</div>` : ''}
+          ${labAddress ? `<div class="center tiny">${labAddress}</div>` : ''}
+          ${labPhone ? `<div class="center small">Tel: ${labPhone}</div>` : ''}
+          ${labSchedule ? `<div class="center tiny">${labSchedule}</div>` : ''}
+          ${labRuc ? `<div class="center small">RUC: ${labRuc}</div>` : ''}
+          ${labReg ? `<div class="center small">Reg: ${labReg}</div>` : ''}
+
+          <div class="line"></div>
+
+          <div class="center bold">COMPROBANTE DE RECEPCIÓN</div>
 
           <div class="line"></div>
 
@@ -503,9 +669,7 @@ export default function OrdersPage() {
           <div class="line"></div>
 
           <div class="center bold">CLAVE DE ACCESO WEB</div>
-          <div class="center bold" style="border:1px solid #000; font-size:16px;">
-            ${order.access_key}
-          </div>
+          <div class="access-box">${order.access_key}</div>
 
           ${order.numero_factura ? `
             <div class="line"></div>
@@ -528,9 +692,9 @@ export default function OrdersPage() {
           ${(order.orden_detalle || [])
             .map(
               (d: any) => `
-                <div class="flex">
-                  <span>- ${d.pruebas?.name || 'Prueba'}</span>
-                  <span>$${Number(d.price || 0).toFixed(2)}</span>
+                <div class="test-row">
+                  <span class="test-name">- ${d.pruebas?.name || 'Prueba'}</span>
+                  <span class="test-price">$${Number(d.price || 0).toFixed(2)}</span>
                 </div>
               `
             )
@@ -556,14 +720,13 @@ export default function OrdersPage() {
           <div class="line"></div>
 
           <div class="center">Consulte sus resultados en:</div>
-          <div class="center bold small">${portalUrl}</div>
+          <div class="center bold tiny">${portalUrl}</div>
 
           <div class="qr">
-            <img src="${qrDataUrl}" />
+            <img src="${qrDataUrl}" alt="QR portal resultados" />
           </div>
 
           <div class="center small">Escanee el código QR</div>
-
         </body>
       </html>
     `;
@@ -575,7 +738,7 @@ export default function OrdersPage() {
     setTimeout(() => {
       printWindow.print();
       printWindow.close();
-    }, 400);
+    }, 500);
   };
 
   const filtered = orders.filter(
@@ -795,9 +958,22 @@ export default function OrdersPage() {
 
             <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
               <div className="space-y-3">
-                <Label className="text-xs font-bold uppercase tracking-wide text-slate-700">
-                  Seleccionar paciente
-                </Label>
+                <div className="flex items-center justify-between gap-3">
+                  <Label className="text-xs font-bold uppercase tracking-wide text-slate-700">
+                    Seleccionar paciente
+                  </Label>
+
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="rounded-xl"
+                    onClick={openCreatePatient}
+                  >
+                    <UserPlus className="w-4 h-4 mr-2" />
+                    Nuevo paciente
+                  </Button>
+                </div>
 
                 <div className="relative">
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -993,6 +1169,123 @@ export default function OrdersPage() {
                 )}
               </Button>
             </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={patientDialogOpen} onOpenChange={setPatientDialogOpen}>
+        <DialogContent className="sm:max-w-[560px] max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl">
+              Nuevo Registro de Paciente
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4 pt-4">
+            <div className="space-y-2">
+              <Label className="font-semibold text-xs uppercase tracking-wider">
+                Nombre Completo *
+              </Label>
+              <Input
+                value={patientForm.name}
+                onChange={(e) => setPatientForm((f) => ({ ...f, name: e.target.value }))}
+                placeholder="Nombres y Apellidos"
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label className="font-semibold text-xs uppercase tracking-wider">
+                  Cédula *
+                </Label>
+                <Input
+                  value={patientForm.cedula}
+                  onChange={(e) => setPatientForm((f) => ({ ...f, cedula: e.target.value }))}
+                  placeholder="ID única"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label className="font-semibold text-xs uppercase tracking-wider">
+                  Teléfono
+                </Label>
+                <Input
+                  value={patientForm.phone}
+                  onChange={(e) => setPatientForm((f) => ({ ...f, phone: e.target.value }))}
+                  placeholder="0987654321"
+                />
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <Label className="font-semibold text-xs uppercase tracking-wider">
+                Correo Electrónico
+              </Label>
+              <Input
+                type="email"
+                value={patientForm.email}
+                onChange={(e) => setPatientForm((f) => ({ ...f, email: e.target.value }))}
+                placeholder="paciente@ejemplo.com"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label className="font-semibold text-xs uppercase tracking-wider">
+                Dirección
+              </Label>
+              <Textarea
+                value={patientForm.direccion}
+                onChange={(e) => setPatientForm((f) => ({ ...f, direccion: e.target.value }))}
+                placeholder="Dirección del paciente"
+                rows={3}
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label className="font-semibold text-xs uppercase tracking-wider">
+                  Fecha de Nacimiento *
+                </Label>
+                <Input
+                  type="date"
+                  value={patientForm.birth_date}
+                  onChange={(e) => setPatientForm((f) => ({ ...f, birth_date: e.target.value }))}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label className="font-semibold text-xs uppercase tracking-wider">
+                  Sexo *
+                </Label>
+                <Select
+                  value={patientForm.sex}
+                  onValueChange={(v: 'M' | 'F') => setPatientForm((f) => ({ ...f, sex: v }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="M">Masculino</SelectItem>
+                    <SelectItem value="F">Femenino</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+            </div>
+
+            <Button
+              onClick={handleSavePatient}
+              className="w-full gradient-clinical text-primary-foreground border-0 h-11 mt-4"
+              disabled={creatingPatient}
+            >
+              {creatingPatient ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Registrando...
+                </>
+              ) : (
+                'Registrar Paciente'
+              )}
+            </Button>
           </div>
         </DialogContent>
       </Dialog>

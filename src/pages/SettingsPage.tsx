@@ -16,11 +16,16 @@ import {
   CheckCircle2,
   CalendarClock,
   RefreshCw,
+  PenTool,
+  Stamp,
 } from "lucide-react";
 import { toast } from "sonner";
 
 type LabConfig = {
   id: string;
+  logo: string;
+  firma: string;
+  sello: string;
   name: string;
   owner: string;
   address: string;
@@ -28,7 +33,6 @@ type LabConfig = {
   health_registry: string;
   phone: string;
   schedule: string;
-  logo: string;
   legal_name: string;
   email: string;
 };
@@ -45,6 +49,10 @@ type FeConfig = {
   establecimiento: string;
   punto_emision: string;
   secuencial_actual: number;
+  direccion_matriz: string;
+  direccion_establecimiento: string;
+  porcentaje_iva: number;
+  forma_pago_sri: string;
   certificado_nombre: string;
   certificado_storage_path: string;
   certificado_thumbprint: string;
@@ -71,6 +79,9 @@ type ProcessCertificateResponse = {
 
 const EMPTY_LAB_CONFIG: LabConfig = {
   id: "",
+  logo: "",
+  firma: "",
+  sello: "",
   name: "",
   owner: "",
   address: "",
@@ -78,7 +89,6 @@ const EMPTY_LAB_CONFIG: LabConfig = {
   health_registry: "",
   phone: "",
   schedule: "",
-  logo: "",
   legal_name: "",
   email: "",
 };
@@ -95,6 +105,10 @@ const EMPTY_FE_CONFIG: FeConfig = {
   establecimiento: "001",
   punto_emision: "001",
   secuencial_actual: 1,
+  direccion_matriz: "",
+  direccion_establecimiento: "",
+  porcentaje_iva: 15,
+  forma_pago_sri: "01",
   certificado_nombre: "",
   certificado_storage_path: "",
   certificado_thumbprint: "",
@@ -115,6 +129,9 @@ export default function SettingsPage() {
   const [feConfig, setFeConfig] = useState<FeConfig>(EMPTY_FE_CONFIG);
 
   const [logoFileLoading, setLogoFileLoading] = useState(false);
+  const [firmaFileLoading, setFirmaFileLoading] = useState(false);
+  const [selloFileLoading, setSelloFileLoading] = useState(false);
+
   const [certFile, setCertFile] = useState<File | null>(null);
   const [certPassword, setCertPassword] = useState("");
 
@@ -124,101 +141,179 @@ export default function SettingsPage() {
 
   const fetchAllConfig = async () => {
     setLoading(true);
+
     try {
       const { data: labData, error: labError } = await supabase
         .from("configuracion_laboratorio")
         .select("*")
+        .order("updated_at", { ascending: false, nullsFirst: false })
+        .limit(1)
         .maybeSingle();
 
       if (labError) throw labError;
 
-      if (labData) {
-        const mappedLab: LabConfig = {
-          id: labData.id ?? "",
-          name: labData.name ?? "",
-          owner: labData.owner ?? "",
-          address: labData.address ?? "",
-          ruc: labData.ruc ?? "",
-          health_registry: labData.health_registry ?? "",
-          phone: labData.phone ?? "",
-          schedule: labData.schedule ?? "",
-          logo: labData.logo ?? "",
-          legal_name: labData.legal_name ?? "",
-          email: labData.email ?? "",
-        };
+      if (!labData) {
+        setLabConfig(EMPTY_LAB_CONFIG);
+        setFeConfig(EMPTY_FE_CONFIG);
+        return;
+      }
 
-        setLabConfig(mappedLab);
+      const mappedLab: LabConfig = {
+        id: labData.id ?? "",
+        logo: labData.logo ?? "",
+        firma: labData.firma ?? "",
+        sello: labData.sello ?? "",
+        name: labData.name ?? "",
+        owner: labData.owner ?? "",
+        address: labData.address ?? "",
+        ruc: labData.ruc ?? "",
+        health_registry: labData.health_registry ?? "",
+        phone: labData.phone ?? "",
+        schedule: labData.schedule ?? "",
+        legal_name: labData.legal_name ?? "",
+        email: labData.email ?? "",
+      };
 
-        const { data: feData, error: feError } = await supabase
-          .from("configuracion_facturacion_electronica")
-          .select("*")
-          .eq("laboratorio_id", mappedLab.id)
-          .maybeSingle();
+      setLabConfig(mappedLab);
 
-        if (feError) throw feError;
+      const { data: feData, error: feError } = await supabase
+        .from("configuracion_facturacion_electronica")
+        .select("*")
+        .eq("laboratorio_id", mappedLab.id)
+        .maybeSingle();
 
-        if (feData) {
-          setFeConfig({
-            id: feData.id ?? "",
-            laboratorio_id: feData.laboratorio_id ?? "",
-            ambiente: feData?.ambiente === "PRODUCCION" ? "PRODUCCION" : "PRUEBAS",
-            razon_social: feData.razon_social ?? "",
-            nombre_comercial: feData.nombre_comercial ?? "",
-            ruc: feData.ruc ?? "",
-            obligado_contabilidad: feData.obligado_contabilidad ?? false,
-            contribuyente_especial: feData.contribuyente_especial ?? "",
-            establecimiento: feData.establecimiento ?? "001",
-            punto_emision: feData.punto_emision ?? "001",
-            secuencial_actual: feData.secuencial_actual ?? 1,
-            certificado_nombre: feData.certificado_nombre ?? "",
-            certificado_storage_path: feData.certificado_storage_path ?? "",
-            certificado_thumbprint: feData.certificado_thumbprint ?? "",
-            certificado_serial: feData.certificado_serial ?? "",
-            certificado_issuer: feData.certificado_issuer ?? "",
-            certificado_subject: feData.certificado_subject ?? "",
-            certificado_fecha_emision: feData.certificado_fecha_emision ?? "",
-            certificado_fecha_caducidad: feData.certificado_fecha_caducidad ?? "",
-            certificado_activo: feData.certificado_activo ?? true,
-          });
-        } else {
-          setFeConfig((prev) => ({
-            ...prev,
-            laboratorio_id: mappedLab.id,
-            razon_social: mappedLab.legal_name || mappedLab.name || "",
-            nombre_comercial: mappedLab.name || "",
-            ruc: mappedLab.ruc || "",
-          }));
-        }
+      if (feError) throw feError;
+
+      if (feData) {
+        setFeConfig({
+          id: feData.id ?? "",
+          laboratorio_id: feData.laboratorio_id ?? mappedLab.id,
+          ambiente: feData.ambiente === "PRODUCCION" ? "PRODUCCION" : "PRUEBAS",
+          razon_social: feData.razon_social ?? "",
+          nombre_comercial: feData.nombre_comercial ?? "",
+          ruc: feData.ruc ?? "",
+          obligado_contabilidad: feData.obligado_contabilidad ?? false,
+          contribuyente_especial: feData.contribuyente_especial ?? "",
+          establecimiento: feData.establecimiento ?? "001",
+          punto_emision: feData.punto_emision ?? "001",
+          secuencial_actual: Number(feData.secuencial_actual ?? 1),
+          direccion_matriz: feData.direccion_matriz ?? mappedLab.address ?? "",
+          direccion_establecimiento: feData.direccion_establecimiento ?? mappedLab.address ?? "",
+          porcentaje_iva: Number(feData.porcentaje_iva ?? 15),
+          forma_pago_sri: feData.forma_pago_sri ?? "01",
+          certificado_nombre: feData.certificado_nombre ?? "",
+          certificado_storage_path: feData.certificado_storage_path ?? "",
+          certificado_thumbprint: feData.certificado_thumbprint ?? "",
+          certificado_serial: feData.certificado_serial ?? "",
+          certificado_issuer: feData.certificado_issuer ?? "",
+          certificado_subject: feData.certificado_subject ?? "",
+          certificado_fecha_emision: feData.certificado_fecha_emision ?? "",
+          certificado_fecha_caducidad: feData.certificado_fecha_caducidad ?? "",
+          certificado_activo: feData.certificado_activo ?? true,
+        });
+      } else {
+        setFeConfig({
+          ...EMPTY_FE_CONFIG,
+          laboratorio_id: mappedLab.id,
+          razon_social: mappedLab.legal_name || mappedLab.name || "",
+          nombre_comercial: mappedLab.name || "",
+          ruc: mappedLab.ruc || "",
+          direccion_matriz: mappedLab.address || "",
+          direccion_establecimiento: mappedLab.address || "",
+          porcentaje_iva: 15,
+          forma_pago_sri: "01",
+        });
       }
     } catch (error: any) {
-      toast.error("Error al cargar configuración: " + error.message);
+      toast.error("Error al cargar configuración: " + (error?.message || "desconocido"));
     } finally {
       setLoading(false);
     }
   };
 
+  const readImageAsBase64 = (
+    file: File,
+    onSuccess: (base64: string) => void,
+    onFinally: () => void
+  ) => {
+    const reader = new FileReader();
+
+    reader.onloadend = () => {
+      onSuccess(reader.result as string);
+      onFinally();
+    };
+
+    reader.onerror = () => {
+      toast.error("No se pudo leer la imagen");
+      onFinally();
+    };
+
+    reader.readAsDataURL(file);
+  };
+
+  const validateImageFile = (file: File, maxMB = 1) => {
+    if (!file.type.startsWith("image/")) {
+      toast.error("Debes seleccionar un archivo de imagen válido");
+      return false;
+    }
+
+    if (file.size > maxMB * 1024 * 1024) {
+      toast.error(`La imagen es muy pesada. Máximo ${maxMB}MB.`);
+      return false;
+    }
+
+    return true;
+  };
+
   const handleLogoFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    if (file.size > 1024 * 1024) {
-      toast.error("La imagen es muy pesada. Máximo 1MB.");
-      return;
-    }
+    if (!validateImageFile(file, 1)) return;
 
     setLogoFileLoading(true);
 
-    const reader = new FileReader();
-    reader.onloadend = () => {
-      setLabConfig((prev) => ({ ...prev, logo: reader.result as string }));
-      setLogoFileLoading(false);
-      toast.success("Logo cargado correctamente");
-    };
-    reader.onerror = () => {
-      setLogoFileLoading(false);
-      toast.error("No se pudo leer la imagen");
-    };
-    reader.readAsDataURL(file);
+    readImageAsBase64(
+      file,
+      (base64) => {
+        setLabConfig((prev) => ({ ...prev, logo: base64 }));
+        toast.success("Logo cargado correctamente");
+      },
+      () => setLogoFileLoading(false)
+    );
+  };
+
+  const handleFirmaFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!validateImageFile(file, 1)) return;
+
+    setFirmaFileLoading(true);
+
+    readImageAsBase64(
+      file,
+      (base64) => {
+        setLabConfig((prev) => ({ ...prev, firma: base64 }));
+        toast.success("Firma cargada correctamente");
+      },
+      () => setFirmaFileLoading(false)
+    );
+  };
+
+  const handleSelloFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!validateImageFile(file, 1)) return;
+
+    setSelloFileLoading(true);
+
+    readImageAsBase64(
+      file,
+      (base64) => {
+        setLabConfig((prev) => ({ ...prev, sello: base64 }));
+        toast.success("Sello cargado correctamente");
+      },
+      () => setSelloFileLoading(false)
+    );
   };
 
   const handleCertFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -261,7 +356,7 @@ export default function SettingsPage() {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
-    const exp = new Date(expiry + "T00:00:00");
+    const exp = new Date(`${expiry}T00:00:00`);
     const diffMs = exp.getTime() - today.getTime();
     const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
 
@@ -300,7 +395,7 @@ export default function SettingsPage() {
     }
 
     if (!labConfig.address.trim()) {
-      toast.error("Debes ingresar la dirección");
+      toast.error("Debes ingresar la dirección del laboratorio");
       return false;
     }
 
@@ -315,7 +410,7 @@ export default function SettingsPage() {
     }
 
     if (!feConfig.ruc.trim()) {
-      toast.error("Debes ingresar el RUC en la configuración de facturación electrónica");
+      toast.error("Debes ingresar el RUC de facturación electrónica");
       return false;
     }
 
@@ -329,11 +424,24 @@ export default function SettingsPage() {
       return false;
     }
 
+    if (!feConfig.direccion_matriz.trim()) {
+      toast.error("Debes ingresar la dirección matriz");
+      return false;
+    }
+
+    if (!feConfig.direccion_establecimiento.trim()) {
+      toast.error("Debes ingresar la dirección del establecimiento");
+      return false;
+    }
+
     return true;
   };
 
   const saveLabConfig = async (): Promise<string> => {
     const payload = {
+      logo: labConfig.logo || "",
+      firma: labConfig.firma || "",
+      sello: labConfig.sello || "",
       name: labConfig.name.trim(),
       owner: labConfig.owner.trim(),
       address: labConfig.address.trim(),
@@ -341,7 +449,6 @@ export default function SettingsPage() {
       health_registry: labConfig.health_registry.trim(),
       phone: labConfig.phone.trim(),
       schedule: labConfig.schedule.trim(),
-      logo: labConfig.logo,
       legal_name: labConfig.legal_name.trim() || null,
       email: labConfig.email.trim() || null,
     };
@@ -378,6 +485,10 @@ export default function SettingsPage() {
       establecimiento: feConfig.establecimiento.trim(),
       punto_emision: feConfig.punto_emision.trim(),
       secuencial_actual: Number(feConfig.secuencial_actual) || 1,
+      direccion_matriz: feConfig.direccion_matriz.trim() || null,
+      direccion_establecimiento: feConfig.direccion_establecimiento.trim() || null,
+      porcentaje_iva: Number(feConfig.porcentaje_iva) || 15,
+      forma_pago_sri: feConfig.forma_pago_sri.trim() || "01",
       certificado_nombre: feConfig.certificado_nombre || null,
       certificado_storage_path: feConfig.certificado_storage_path || null,
       certificado_thumbprint: feConfig.certificado_thumbprint || null,
@@ -396,20 +507,21 @@ export default function SettingsPage() {
         .eq("id", feConfig.id);
 
       if (error) throw error;
-    } else {
-      const { data, error } = await supabase
-        .from("configuracion_facturacion_electronica")
-        .insert([payload])
-        .select("id")
-        .single();
-
-      if (error) throw error;
-
-      setFeConfig((prev) => ({
-        ...prev,
-        id: data.id as string,
-      }));
+      return;
     }
+
+    const { data, error } = await supabase
+      .from("configuracion_facturacion_electronica")
+      .insert([payload])
+      .select("id")
+      .single();
+
+    if (error) throw error;
+
+    setFeConfig((prev) => ({
+      ...prev,
+      id: data.id as string,
+    }));
   };
 
   const handleProcessCertificate = async () => {
@@ -423,7 +535,12 @@ export default function SettingsPage() {
       return;
     }
 
-    if (!labConfig.name.trim() || !labConfig.owner.trim() || !labConfig.address.trim() || !labConfig.ruc.trim()) {
+    if (
+      !labConfig.name.trim() ||
+      !labConfig.owner.trim() ||
+      !labConfig.address.trim() ||
+      !labConfig.ruc.trim()
+    ) {
       toast.error("Completa y guarda primero los datos principales del laboratorio");
       return;
     }
@@ -470,7 +587,7 @@ export default function SettingsPage() {
 
       toast.success("Certificado procesado correctamente");
     } catch (error: any) {
-      toast.error("Error al procesar certificado: " + error.message);
+      toast.error("Error al procesar certificado: " + (error?.message || "desconocido"));
     } finally {
       setProcessingCert(false);
     }
@@ -480,6 +597,7 @@ export default function SettingsPage() {
     if (!validateBeforeSave()) return;
 
     setSaving(true);
+
     try {
       const laboratorioId = await saveLabConfig();
 
@@ -492,7 +610,7 @@ export default function SettingsPage() {
       toast.success("Configuración guardada exitosamente");
       await fetchAllConfig();
     } catch (error: any) {
-      toast.error("Error al guardar: " + error.message);
+      toast.error("Error al guardar: " + (error?.message || "desconocido"));
     } finally {
       setSaving(false);
     }
@@ -539,47 +657,140 @@ export default function SettingsPage() {
         </CardHeader>
 
         <CardContent className="space-y-6 pt-6">
-          <div className="flex flex-col items-center gap-4 p-4 border-2 border-dashed rounded-xl bg-slate-50/50">
-            {labConfig.logo ? (
-              <div className="relative group">
-                <img
-                  src={labConfig.logo}
-                  alt="Logo Preview"
-                  className="h-24 w-auto object-contain rounded-lg shadow-sm bg-white p-2"
-                />
-                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center rounded-lg transition-opacity cursor-pointer">
-                  <Label htmlFor="logo-upload" className="text-white text-xs cursor-pointer">
-                    Cambiar
-                  </Label>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* LOGO */}
+            <div className="flex flex-col items-center gap-4 p-4 border-2 border-dashed rounded-xl bg-slate-50/50">
+              {labConfig.logo ? (
+                <div className="relative group">
+                  <img
+                    src={labConfig.logo}
+                    alt="Logo Preview"
+                    className="h-24 w-auto object-contain rounded-lg shadow-sm bg-white p-2"
+                  />
+                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center rounded-lg transition-opacity cursor-pointer">
+                    <Label htmlFor="logo-upload" className="text-white text-xs cursor-pointer">
+                      Cambiar
+                    </Label>
+                  </div>
                 </div>
-              </div>
-            ) : (
-              <div className="h-20 w-20 rounded-full bg-slate-200 flex items-center justify-center text-slate-400">
-                <ImageIcon className="w-10 h-10" />
-              </div>
-            )}
+              ) : (
+                <div className="h-20 w-20 rounded-full bg-slate-200 flex items-center justify-center text-slate-400">
+                  <ImageIcon className="w-10 h-10" />
+                </div>
+              )}
 
-            <div className="text-center">
-              <Label htmlFor="logo-upload" className="cursor-pointer">
-                <div className="flex items-center gap-2 text-primary font-bold text-sm hover:underline">
-                  {logoFileLoading ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Upload className="w-4 h-4" />
-                  )}
-                  Subir Imagen de Logo
+              <div className="text-center">
+                <Label htmlFor="logo-upload" className="cursor-pointer">
+                  <div className="flex items-center gap-2 text-primary font-bold text-sm hover:underline">
+                    {logoFileLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Upload className="w-4 h-4" />
+                    )}
+                    Subir Logo
+                  </div>
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    PNG, JPG (Máx. 1MB)
+                  </p>
+                </Label>
+                <Input
+                  id="logo-upload"
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handleLogoFileChange}
+                />
+              </div>
+            </div>
+
+            {/* FIRMA */}
+            <div className="flex flex-col items-center gap-4 p-4 border-2 border-dashed rounded-xl bg-slate-50/50">
+              {labConfig.firma ? (
+                <div className="relative group">
+                  <img
+                    src={labConfig.firma}
+                    alt="Firma Preview"
+                    className="h-24 w-auto object-contain rounded-lg shadow-sm bg-white p-2"
+                  />
+                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center rounded-lg transition-opacity cursor-pointer">
+                    <Label htmlFor="firma-upload" className="text-white text-xs cursor-pointer">
+                      Cambiar
+                    </Label>
+                  </div>
                 </div>
-                <p className="text-[10px] text-muted-foreground mt-1">
-                  PNG, JPG (Máx. 1MB - Recomendado 400x400px)
-                </p>
-              </Label>
-              <Input
-                id="logo-upload"
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={handleLogoFileChange}
-              />
+              ) : (
+                <div className="h-20 w-20 rounded-full bg-slate-200 flex items-center justify-center text-slate-400">
+                  <PenTool className="w-10 h-10" />
+                </div>
+              )}
+
+              <div className="text-center">
+                <Label htmlFor="firma-upload" className="cursor-pointer">
+                  <div className="flex items-center gap-2 text-primary font-bold text-sm hover:underline">
+                    {firmaFileLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Upload className="w-4 h-4" />
+                    )}
+                    Subir Firma
+                  </div>
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    PNG recomendado, fondo transparente
+                  </p>
+                </Label>
+                <Input
+                  id="firma-upload"
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handleFirmaFileChange}
+                />
+              </div>
+            </div>
+
+            {/* SELLO */}
+            <div className="flex flex-col items-center gap-4 p-4 border-2 border-dashed rounded-xl bg-slate-50/50">
+              {labConfig.sello ? (
+                <div className="relative group">
+                  <img
+                    src={labConfig.sello}
+                    alt="Sello Preview"
+                    className="h-24 w-auto object-contain rounded-lg shadow-sm bg-white p-2"
+                  />
+                  <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center rounded-lg transition-opacity cursor-pointer">
+                    <Label htmlFor="sello-upload" className="text-white text-xs cursor-pointer">
+                      Cambiar
+                    </Label>
+                  </div>
+                </div>
+              ) : (
+                <div className="h-20 w-20 rounded-full bg-slate-200 flex items-center justify-center text-slate-400">
+                  <Stamp className="w-10 h-10" />
+                </div>
+              )}
+
+              <div className="text-center">
+                <Label htmlFor="sello-upload" className="cursor-pointer">
+                  <div className="flex items-center gap-2 text-primary font-bold text-sm hover:underline">
+                    {selloFileLoading ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Upload className="w-4 h-4" />
+                    )}
+                    Subir Sello
+                  </div>
+                  <p className="text-[10px] text-muted-foreground mt-1">
+                    PNG recomendado, fondo transparente
+                  </p>
+                </Label>
+                <Input
+                  id="sello-upload"
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={handleSelloFileChange}
+                />
+              </div>
             </div>
           </div>
 
@@ -591,7 +802,7 @@ export default function SettingsPage() {
               <Input
                 value={labConfig.name}
                 onChange={(e) => setLabConfig((f) => ({ ...f, name: e.target.value }))}
-                placeholder="Ej: Laboratorio Clínico Central"
+                placeholder='Ej: Laboratorio de Análisis Clínico "Central"'
               />
             </div>
 
@@ -829,6 +1040,77 @@ export default function SettingsPage() {
             </div>
           </div>
 
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                Dirección Matriz
+              </Label>
+              <Input
+                value={feConfig.direccion_matriz}
+                onChange={(e) =>
+                  setFeConfig((prev) => ({
+                    ...prev,
+                    direccion_matriz: e.target.value,
+                  }))
+                }
+                placeholder="Dirección matriz"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                Dirección Establecimiento
+              </Label>
+              <Input
+                value={feConfig.direccion_establecimiento}
+                onChange={(e) =>
+                  setFeConfig((prev) => ({
+                    ...prev,
+                    direccion_establecimiento: e.target.value,
+                  }))
+                }
+                placeholder="Dirección del establecimiento"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="space-y-2">
+              <Label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                Porcentaje IVA
+              </Label>
+              <Input
+                type="number"
+                min={0}
+                step="0.01"
+                value={feConfig.porcentaje_iva}
+                onChange={(e) =>
+                  setFeConfig((prev) => ({
+                    ...prev,
+                    porcentaje_iva: Number(e.target.value) || 0,
+                  }))
+                }
+                placeholder="15"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                Forma de Pago SRI
+              </Label>
+              <Input
+                value={feConfig.forma_pago_sri}
+                onChange={(e) =>
+                  setFeConfig((prev) => ({
+                    ...prev,
+                    forma_pago_sri: e.target.value,
+                  }))
+                }
+                placeholder="01"
+              />
+            </div>
+          </div>
+
           <div className="flex items-center gap-3 rounded-xl border bg-slate-50 p-4">
             <input
               id="obligado_contabilidad"
@@ -855,8 +1137,8 @@ export default function SettingsPage() {
                   Certificado de Firma Electrónica
                 </h3>
                 <p className="text-xs text-muted-foreground mt-1">
-                  Selecciona el archivo .p12 o .pfx y luego procesa el certificado para obtener los
-                  metadatos automáticamente.
+                  Si ya existe un certificado guardado, sus metadatos se cargan automáticamente.
+                  Solo selecciona un nuevo archivo si deseas reemplazarlo.
                 </p>
               </div>
 
@@ -891,7 +1173,7 @@ export default function SettingsPage() {
                     placeholder="********"
                   />
                   <p className="text-xs text-muted-foreground">
-                    Por seguridad, esta clave no se vuelve a mostrar.
+                    Solo se usa cuando subes un nuevo certificado.
                   </p>
                 </div>
               </div>
