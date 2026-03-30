@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -7,16 +7,65 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { FileText, FlaskConical, Loader2, CheckCircle2 } from 'lucide-react';
+import {
+  FlaskConical,
+  Loader2,
+  CheckCircle2,
+  CalendarDays,
+  Download,
+  Search,
+  ChevronDown,
+  ChevronUp,
+} from 'lucide-react';
 import { toast } from 'sonner';
+import { Textarea } from '@/components/ui/textarea';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
+  generateResultsPDF,
+  PdfLabConfig,
+  PdfOrder,
+  PdfOrderResult,
+  PdfPatient,
+} from '@/lib/pdfGenerator';
+
+type ResultStatus = 'normal' | 'high' | 'low' | 'positive' | 'negative' | 'text' | null;
+type ResultType = 'numeric' | 'boolean' | 'text';
+
+interface EntryValueItem {
+  value_numeric: string;
+  value_boolean: '' | 'true' | 'false';
+  value_text: string;
+  observation: string;
+}
+
+function emptyEntryValue(): EntryValueItem {
+  return {
+    value_numeric: '',
+    value_boolean: '',
+    value_text: '',
+    observation: '',
+  };
+}
 
 export default function ResultsPage() {
   const [orders, setOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
   const [entryDialogOpen, setEntryDialogOpen] = useState(false);
-  const [entryValues, setEntryValues] = useState<Record<string, number>>({});
+  const [entryValues, setEntryValues] = useState<Record<string, EntryValueItem>>({});
   const [orderDetails, setOrderDetails] = useState<any>(null);
+  const [saving, setSaving] = useState(false);
+  const [downloadingOrderId, setDownloadingOrderId] = useState<string | null>(null);
+  const [resultDate, setResultDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
+
+  const [search, setSearch] = useState('');
+  const [historyOpen, setHistoryOpen] = useState(false);
 
   useEffect(() => {
     fetchOrders();
@@ -24,12 +73,19 @@ export default function ResultsPage() {
 
   const fetchOrders = async () => {
     setLoading(true);
-    const { data } = await supabase
-      .from('ordenes')
-      .select('*, pacientes(*)')
-      .order('created_at', { ascending: false });
-    setOrders(data || []);
-    setLoading(false);
+    try {
+      const { data, error } = await supabase
+        .from('ordenes')
+        .select('*, pacientes(*)')
+        .order('created_at', { ascending: false });
+
+      if (error) throw error;
+      setOrders(data || []);
+    } catch (error: any) {
+      toast.error('Error al cargar órdenes');
+    } finally {
+      setLoading(false);
+    }
   };
 
   const calcAge = (birthDate: string) => {
@@ -38,103 +94,489 @@ export default function ResultsPage() {
     return Math.floor(diff / (365.25 * 24 * 60 * 60 * 1000));
   };
 
-  const openEntry = async (order: any) => {
-    setSelectedOrderId(order.id);
-    setEntryValues({});
-    
-    // Cargar pruebas de la orden con sus parámetros y rangos
-    const { data: details, error } = await supabase
-      .from('orden_detalle')
-      .select(`
-        test_id,
-        pruebas (
-          id, name,
-          parametros_prueba (
-            id, name, unit,
-            rangos_referencia (*)
-          )
-        )
-      `)
-      .eq('order_id', order.id);
+  const normalizeText = (value: any) =>
+    String(value ?? '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .trim();
 
-    if (error) return toast.error("Error al cargar parámetros");
-    
-    setOrderDetails({ ...order, tests: details.map(d => d.pruebas) });
-    setEntryDialogOpen(true);
+  const matchesSearch = (order: any) => {
+    const q = normalizeText(search);
+    if (!q) return true;
+
+    const patientName = normalizeText(order.pacientes?.name);
+    const code = normalizeText(order.code);
+    const cedula = normalizeText(order.pacientes?.cedula);
+
+    return patientName.includes(q) || code.includes(q) || cedula.includes(q);
+  };
+
+  const openEntry = async (order: any) => {
+    try {
+      setSelectedOrderId(order.id);
+      setEntryValues({});
+      setResultDate(new Date().toISOString().split('T')[0]);
+
+      const { data: details, error } = await supabase
+        .from('orden_detalle')
+        .select(`
+          test_id,
+          pruebas (
+            id,
+            name,
+            parametros_prueba (
+              id,
+              name,
+              unit,
+              result_type,
+              bool_true_label,
+              bool_false_label,
+              allow_observation,
+              sort_order,
+              rangos_referencia (*)
+            )
+          )
+        `)
+        .eq('order_id', order.id);
+
+      if (error) throw error;
+
+      const normalizedTests = (details || []).map((d: any) => ({
+        ...d.pruebas,
+        parametros_prueba: [...(d.pruebas?.parametros_prueba || [])].sort(
+          (a: any, b: any) => Number(a.sort_order ?? 0) - Number(b.sort_order ?? 0)
+        ),
+      }));
+
+      const initialValues: Record<string, EntryValueItem> = {};
+      normalizedTests.forEach((test: any) => {
+        (test.parametros_prueba || []).forEach((param: any) => {
+          initialValues[param.id] = emptyEntryValue();
+        });
+      });
+
+      setEntryValues(initialValues);
+      setOrderDetails({ ...order, tests: normalizedTests });
+      setEntryDialogOpen(true);
+    } catch (error: any) {
+      toast.error('Error al cargar parámetros');
+    }
   };
 
   const getAppliedRange = (parameter: any, patient: any) => {
     const age = calcAge(patient.birth_date);
-    const range = parameter.rangos_referencia.find((r: any) => 
-      (r.sex === 'both' || r.sex === patient.sex) && 
-      age >= r.min_age && age <= r.max_age
+    const ranges = parameter.rangos_referencia || [];
+    const range = ranges.find(
+      (r: any) =>
+        (r.sex === 'both' || r.sex === patient.sex) &&
+        age >= Number(r.min_age) &&
+        age <= Number(r.max_age)
     );
-    return range ? { min: Number(range.min_value), max: Number(range.max_value) } : null;
+
+    return range
+      ? {
+          min: Number(range.min_value),
+          max: Number(range.max_value),
+        }
+      : null;
   };
 
-  const classifyValue = (value: number, range: any): 'normal' | 'high' | 'low' => {
+  const classifyNumericValue = (value: number, range: any): 'normal' | 'high' | 'low' => {
     if (!range) return 'normal';
     if (value < range.min) return 'low';
     if (value > range.max) return 'high';
     return 'normal';
   };
 
+  const updateEntryValue = (
+    parameterId: string,
+    field: keyof EntryValueItem,
+    value: string
+  ) => {
+    setEntryValues(prev => ({
+      ...prev,
+      [parameterId]: {
+        ...(prev[parameterId] || emptyEntryValue()),
+        [field]: value,
+      },
+    }));
+  };
+
+  const getStatusPreview = (param: any): ResultStatus => {
+    const item = entryValues[param.id] || emptyEntryValue();
+    const resultType: ResultType = param.result_type || 'numeric';
+
+    if (resultType === 'numeric') {
+      if (item.value_numeric === '') return null;
+      const value = Number(item.value_numeric);
+      if (!Number.isFinite(value)) return null;
+      const range = getAppliedRange(param, orderDetails?.pacientes);
+      return classifyNumericValue(value, range);
+    }
+
+    if (resultType === 'boolean') {
+      if (item.value_boolean === '') return null;
+      return item.value_boolean === 'true' ? 'positive' : 'negative';
+    }
+
+    if (resultType === 'text') {
+      if (!item.value_text.trim()) return null;
+      return 'text';
+    }
+
+    return null;
+  };
+
+  const validateEntries = () => {
+    if (!orderDetails?.tests?.length) {
+      toast.error('No hay pruebas cargadas para esta orden');
+      return false;
+    }
+
+    if (!resultDate) {
+      toast.error('Debes indicar la fecha del resultado');
+      return false;
+    }
+
+    for (const test of orderDetails.tests) {
+      for (const param of test.parametros_prueba || []) {
+        const item = entryValues[param.id] || emptyEntryValue();
+        const resultType: ResultType = param.result_type || 'numeric';
+
+        if (resultType === 'numeric') {
+          if (item.value_numeric === '') {
+            toast.error(`Falta ingresar el valor de "${param.name}" en ${test.name}`);
+            return false;
+          }
+          const n = Number(item.value_numeric);
+          if (!Number.isFinite(n)) {
+            toast.error(`El valor de "${param.name}" no es válido`);
+            return false;
+          }
+        }
+
+        if (resultType === 'boolean') {
+          if (item.value_boolean === '') {
+            toast.error(`Falta seleccionar el valor de "${param.name}" en ${test.name}`);
+            return false;
+          }
+        }
+
+        if (resultType === 'text') {
+          if (!item.value_text.trim()) {
+            toast.error(`Falta ingresar el texto de "${param.name}" en ${test.name}`);
+            return false;
+          }
+        }
+      }
+    }
+
+    return true;
+  };
+
   const handleSaveResults = async () => {
+    if (!validateEntries()) return;
+
     try {
-      // 1. Crear registro principal en 'resultados' por cada prueba de la orden
+      setSaving(true);
+
       for (const test of orderDetails.tests) {
-        const { data: resultDoc, error: resError } = await supabase
+        const { data: existingResults, error: existingError } = await supabase
           .from('resultados')
-          .insert([{
-            order_id: selectedOrderId,
-            test_id: test.id,
-            date: new Date().toISOString().split('T')[0]
-          }])
-          .select()
-          .single();
+          .select('id')
+          .eq('order_id', selectedOrderId)
+          .eq('test_id', test.id)
+          .limit(1);
 
-        if (resError) throw resError;
+        if (existingError) throw existingError;
 
-        // 2. Insertar los valores en 'resultado_detalle'
-        const detailsToInsert = test.parametros_prueba.map((param: any) => {
-          const value = entryValues[param.id] || 0;
-          const range = getAppliedRange(param, orderDetails.pacientes);
+        let resultId: string;
+
+        if (existingResults && existingResults.length > 0) {
+          resultId = existingResults[0].id;
+
+          const { error: updateResultError } = await supabase
+            .from('resultados')
+            .update({ date: resultDate })
+            .eq('id', resultId);
+
+          if (updateResultError) throw updateResultError;
+
+          const { error: deleteDetailError } = await supabase
+            .from('resultado_detalle')
+            .delete()
+            .eq('result_id', resultId);
+
+          if (deleteDetailError) throw deleteDetailError;
+        } else {
+          const { data: resultDoc, error: resError } = await supabase
+            .from('resultados')
+            .insert([
+              {
+                order_id: selectedOrderId,
+                test_id: test.id,
+                date: resultDate,
+              },
+            ])
+            .select()
+            .single();
+
+          if (resError) throw resError;
+          resultId = resultDoc.id;
+        }
+
+        const detailsToInsert = (test.parametros_prueba || []).map((param: any) => {
+          const item = entryValues[param.id] || emptyEntryValue();
+          const resultType: ResultType = param.result_type || 'numeric';
+          const range =
+            resultType === 'numeric' ? getAppliedRange(param, orderDetails.pacientes) : null;
+
+          let status: ResultStatus = null;
+          let value_numeric: number | null = null;
+          let value_boolean: boolean | null = null;
+          let value_text: string | null = null;
+          let applied_range_min: number | null = null;
+          let applied_range_max: number | null = null;
+
+          if (resultType === 'numeric') {
+            value_numeric = Number(item.value_numeric);
+            status = classifyNumericValue(value_numeric, range);
+            applied_range_min = range?.min ?? null;
+            applied_range_max = range?.max ?? null;
+          }
+
+          if (resultType === 'boolean') {
+            value_boolean = item.value_boolean === 'true';
+            status = value_boolean ? 'positive' : 'negative';
+          }
+
+          if (resultType === 'text') {
+            value_text = item.value_text.trim();
+            status = 'text';
+          }
+
           return {
-            result_id: resultDoc.id,
+            result_id: resultId,
             parameter_id: param.id,
-            value: value,
-            status: classifyValue(value, range),
-            applied_range_min: range?.min,
-            applied_range_max: range?.max
+            value_numeric,
+            value_boolean,
+            value_text,
+            observation: param.allow_observation ? item.observation.trim() || null : null,
+            status,
+            applied_range_min,
+            applied_range_max,
           };
         });
 
-        const { error: detError } = await supabase.from('resultado_detalle').insert(detailsToInsert);
+        const { error: detError } = await supabase
+          .from('resultado_detalle')
+          .insert(detailsToInsert);
+
         if (detError) throw detError;
       }
 
-      // 3. Actualizar estado de la orden
-      await supabase.from('ordenes').update({ status: 'completed' }).eq('id', selectedOrderId);
+      const { error: updateOrderError } = await supabase
+        .from('ordenes')
+        .update({ status: 'completed' })
+        .eq('id', selectedOrderId);
+
+      if (updateOrderError) throw updateOrderError;
 
       toast.success('Resultados guardados exitosamente');
       setEntryDialogOpen(false);
+      setOrderDetails(null);
+      setSelectedOrderId(null);
+      setEntryValues({});
       fetchOrders();
     } catch (error: any) {
       toast.error('Error al guardar: ' + error.message);
+    } finally {
+      setSaving(false);
     }
   };
 
-  const pendingOrders = orders.filter(o => o.status !== 'completed');
-  const completedOrders = orders.filter(o => o.status === 'completed');
+  const getResultType = (det: any): ResultType => {
+    return (det?.parametros_prueba?.result_type || 'numeric') as ResultType;
+  };
 
-  if (loading) return <div className="flex h-64 items-center justify-center"><Loader2 className="animate-spin text-primary" /></div>;
+  const getDisplayValue = (det: any) => {
+    const resultType = getResultType(det);
+
+    if (resultType === 'numeric') {
+      const value = det.value_numeric;
+      return value !== null && value !== undefined && value !== '' ? String(value) : '';
+    }
+
+    if (resultType === 'boolean') {
+      const boolValue = det.value_boolean;
+      if (boolValue === null || boolValue === undefined) return '';
+
+      return boolValue
+        ? det.parametros_prueba?.bool_true_label || 'Positivo'
+        : det.parametros_prueba?.bool_false_label || 'Negativo';
+    }
+
+    return det.value_text || '';
+  };
+
+  const getDisplayUnit = (det: any) => {
+    const resultType = getResultType(det);
+    if (resultType !== 'numeric') return '';
+    return det.parametros_prueba?.unit || '';
+  };
+
+  const handleDownloadResultPdf = async (orderId: string) => {
+    try {
+      setDownloadingOrderId(orderId);
+      toast.info('Generando PDF de resultados...');
+
+      const [{ data: configData, error: configError }, { data: orderData, error: orderError }] =
+        await Promise.all([
+          supabase.from('configuracion_laboratorio').select('*').maybeSingle(),
+          supabase
+            .from('ordenes')
+            .select(`
+              *,
+              pacientes (*),
+              resultados (
+                *,
+                resultado_detalle (
+                  *,
+                  parametros_prueba (
+                    *,
+                    rangos_referencia (*)
+                  )
+                ),
+                pruebas (*)
+              )
+            `)
+            .eq('id', orderId)
+            .maybeSingle(),
+        ]);
+
+      if (configError) throw configError;
+      if (orderError) throw orderError;
+      if (!configData) throw new Error('No existe la configuración del laboratorio');
+      if (!orderData) throw new Error('No se encontró la orden');
+      if (!orderData.resultados?.length) throw new Error('La orden no tiene resultados registrados');
+
+      const pdfConfig: PdfLabConfig = {
+        name: configData.name || 'LABORATORIO CLÍNICO',
+        owner: configData.owner || '',
+        address: configData.address || '',
+        ruc: configData.ruc || '',
+        healthRegistry: configData.health_registry || '',
+        phone: configData.phone || '',
+        schedule: configData.schedule || '',
+        logo: configData.logo || '',
+        firma: configData.firma || '',
+        sello: configData.sello || '',
+      };
+
+      const pdfPatient: PdfPatient = {
+        name: orderData.pacientes?.name || '',
+        cedula: orderData.pacientes?.cedula || '',
+        phone: orderData.pacientes?.phone || '',
+        sex: orderData.pacientes?.sex === 'F' ? 'F' : 'M',
+        birth_date: orderData.pacientes?.birth_date || null,
+      };
+
+      const firstResultDate =
+        orderData.resultados?.map((r: any) => r.date).filter(Boolean)?.[0] ||
+        orderData.created_at ||
+        null;
+
+      const pdfOrder: PdfOrder = {
+        code: orderData.code || '',
+        accessKey: orderData.access_key || '',
+        date: firstResultDate || orderData.created_at || '',
+        created_at: firstResultDate || orderData.created_at || null,
+      };
+
+      const orderTests =
+        orderData.resultados?.map((res: any) => ({
+          id: res.pruebas?.id || res.test_id || res.id,
+          name: res.pruebas?.name || 'Examen',
+        })) || [];
+
+      const orderResults: PdfOrderResult[] =
+        orderData.resultados?.map((res: any) => ({
+          id: res.id,
+          testId: res.pruebas?.id || res.test_id || res.id,
+          testName: res.pruebas?.name || 'Examen',
+          notes: res.notes || res.observacion || res.resultado_texto || '',
+          date: res.date || null,
+          details:
+            res.resultado_detalle?.map((det: any) => ({
+              id: det.id,
+              parameterId: det.parametros_prueba?.id || det.parameter_id || null,
+              parameterName:
+                det.parametros_prueba?.name || det.name || det.parametro || 'Resultado',
+              value: getDisplayValue(det),
+              appliedRangeMin: det.applied_range_min ?? null,
+              appliedRangeMax: det.applied_range_max ?? null,
+              unit: getDisplayUnit(det),
+              status: det.status || 'normal',
+              observation: det.observation || '',
+              resultType: getResultType(det),
+            })) || [],
+        })) || [];
+
+      generateResultsPDF(pdfOrder, pdfPatient, orderTests, orderResults, pdfConfig);
+      toast.success('PDF generado correctamente');
+    } catch (error: any) {
+      toast.error('No se pudo generar el PDF: ' + (error?.message || 'desconocido'));
+    } finally {
+      setDownloadingOrderId(null);
+    }
+  };
+
+  const pendingOrders = useMemo(
+    () => orders.filter(o => o.status !== 'completed' && matchesSearch(o)),
+    [orders, search]
+  );
+
+  const completedOrders = useMemo(
+    () => orders.filter(o => o.status === 'completed' && matchesSearch(o)),
+    [orders, search]
+  );
+
+  if (loading) {
+    return (
+      <div className="flex h-64 items-center justify-center">
+        <Loader2 className="animate-spin text-primary" />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 animate-fade-in">
       <div>
         <h1 className="text-2xl font-display font-bold">Resultados de Laboratorio</h1>
-        <p className="text-muted-foreground text-sm">Validación técnica y registro de valores</p>
+        <p className="text-muted-foreground text-sm">
+          Validación técnica y registro de resultados
+        </p>
       </div>
+
+      <Card className="border-slate-200">
+        <CardContent className="pt-6">
+          <div className="max-w-md">
+            <Label className="text-sm font-semibold text-slate-700 mb-2 block">
+              Buscar paciente
+            </Label>
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+              <Input
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Buscar por nombre, cédula o código..."
+                className="pl-10 bg-white"
+              />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {pendingOrders.length > 0 && (
         <Card className="border-amber-100 bg-amber-50/20">
@@ -147,13 +589,24 @@ export default function ResultsPage() {
           <CardContent>
             <div className="grid gap-3">
               {pendingOrders.map(order => (
-                <div key={order.id} className="flex items-center justify-between p-4 rounded-xl bg-white border border-amber-100 shadow-sm">
+                <div
+                  key={order.id}
+                  className="flex items-center justify-between p-4 rounded-xl bg-white border border-amber-100 shadow-sm"
+                >
                   <div>
-                    <p className="font-bold text-slate-700">{order.code} — {order.pacientes?.name}</p>
-                    <p className="text-xs text-muted-foreground">Recibido: {new Date(order.created_at).toLocaleDateString()}</p>
+                    <p className="font-bold text-slate-700">
+                      {order.code} — {order.pacientes?.name}
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Recibido: {new Date(order.created_at).toLocaleDateString()}
+                    </p>
                   </div>
-                  <Button size="sm" onClick={() => openEntry(order)} className="gradient-clinical text-primary-foreground border-0">
-                    Ingresar Valores
+                  <Button
+                    size="sm"
+                    onClick={() => openEntry(order)}
+                    className="gradient-clinical text-primary-foreground border-0"
+                  >
+                    Ingresar Resultados
                   </Button>
                 </div>
               ))}
@@ -162,93 +615,257 @@ export default function ResultsPage() {
         </Card>
       )}
 
+      {search.trim() && pendingOrders.length === 0 && completedOrders.length === 0 && (
+        <Card>
+          <CardContent className="py-8 text-center text-sm text-muted-foreground">
+            No se encontraron órdenes que coincidan con la búsqueda.
+          </CardContent>
+        </Card>
+      )}
+
       <Card>
-        <CardHeader className="pb-3 border-b border-slate-50">
-          <CardTitle className="text-lg font-display">Historial de Resultados</CardTitle>
+        <CardHeader
+          className="pb-3 border-b border-slate-50 cursor-pointer select-none"
+          onClick={() => setHistoryOpen(prev => !prev)}
+        >
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-lg font-display flex items-center gap-2">
+              Historial de Resultados
+              <Badge variant="outline">{completedOrders.length}</Badge>
+            </CardTitle>
+
+            <Button variant="ghost" size="icon" type="button">
+              {historyOpen ? (
+                <ChevronUp className="w-4 h-4" />
+              ) : (
+                <ChevronDown className="w-4 h-4" />
+              )}
+            </Button>
+          </div>
         </CardHeader>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Orden</TableHead>
-                <TableHead>Paciente</TableHead>
-                <TableHead className="hidden md:table-cell">Fecha Emisión</TableHead>
-                <TableHead>Estado</TableHead>
-                <TableHead className="text-right">Reporte</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {completedOrders.map(order => (
-                <TableRow key={order.id}>
-                  <TableCell className="font-mono font-bold text-slate-600">{order.code}</TableCell>
-                  <TableCell className="text-sm">{order.pacientes?.name}</TableCell>
-                  <TableCell className="hidden md:table-cell text-xs">{new Date(order.created_at).toLocaleDateString()}</TableCell>
-                  <TableCell>
-                    <Badge className="bg-emerald-50 text-emerald-700 border-emerald-100 flex w-fit items-center gap-1">
-                      <CheckCircle2 className="w-3 h-3" /> Validado
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <Button variant="ghost" size="icon" className="text-blue-600">
-                      <FileText className="w-4 h-4" />
-                    </Button>
-                  </TableCell>
+
+        {historyOpen && (
+          <CardContent className="p-0">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Orden</TableHead>
+                  <TableHead>Paciente</TableHead>
+                  <TableHead className="hidden md:table-cell">Fecha Emisión</TableHead>
+                  <TableHead>Estado</TableHead>
+                  <TableHead className="text-right">Reporte</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
+              </TableHeader>
+              <TableBody>
+                {completedOrders.map(order => (
+                  <TableRow key={order.id}>
+                    <TableCell className="font-mono font-bold text-slate-600">
+                      {order.code}
+                    </TableCell>
+                    <TableCell className="text-sm">{order.pacientes?.name}</TableCell>
+                    <TableCell className="hidden md:table-cell text-xs">
+                      {new Date(order.created_at).toLocaleDateString()}
+                    </TableCell>
+                    <TableCell>
+                      <Badge className="bg-emerald-50 text-emerald-700 border-emerald-100 flex w-fit items-center gap-1">
+                        <CheckCircle2 className="w-3 h-3" /> Validado
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="text-blue-600"
+                        onClick={() => handleDownloadResultPdf(order.id)}
+                        disabled={downloadingOrderId === order.id}
+                        title="Descargar PDF"
+                      >
+                        {downloadingOrderId === order.id ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Download className="w-4 h-4" />
+                        )}
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+
+                {completedOrders.length === 0 && (
+                  <TableRow>
+                    <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+                      No hay resultados que coincidan con la búsqueda
+                    </TableCell>
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </CardContent>
+        )}
       </Card>
 
-      <Dialog open={entryDialogOpen} onOpenChange={setEntryDialogOpen}>
-        <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+      <Dialog
+        open={entryDialogOpen}
+        onOpenChange={(open) => {
+          if (!saving) {
+            setEntryDialogOpen(open);
+          }
+        }}
+      >
+        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle className="font-display text-xl text-primary">Ingreso Técnico de Resultados</DialogTitle>
+            <DialogTitle className="font-display text-xl text-primary">
+              Ingreso Técnico de Resultados
+            </DialogTitle>
+
             {orderDetails && (
-              <div className="flex gap-4 mt-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+              <div className="flex flex-wrap gap-4 mt-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 <span>Paciente: {orderDetails.pacientes.name}</span>
                 <span>Edad: {calcAge(orderDetails.pacientes.birth_date)} años</span>
                 <span>Sexo: {orderDetails.pacientes.sex}</span>
               </div>
             )}
           </DialogHeader>
-          
-          <div className="space-y-8 mt-4">
+
+          <div className="space-y-6 mt-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 rounded-xl border bg-slate-50/60">
+              <div className="md:col-span-1">
+                <Label className="text-sm font-semibold flex items-center gap-2">
+                  <CalendarDays className="w-4 h-4" />
+                  Fecha del resultado
+                </Label>
+                <Input
+                  type="date"
+                  value={resultDate}
+                  onChange={e => setResultDate(e.target.value)}
+                  className="bg-white"
+                />
+              </div>
+            </div>
+
             {orderDetails?.tests.map((test: any) => (
               <div key={test.id} className="space-y-4 border-l-4 border-primary/20 pl-4">
                 <h3 className="font-display font-bold text-lg text-slate-800 underline decoration-primary/30 underline-offset-4">
                   {test.name}
                 </h3>
+
                 <div className="space-y-4">
-                  {test.parametros_prueba.map((param: any) => {
+                  {(test.parametros_prueba || []).map((param: any) => {
+                    const item = entryValues[param.id] || emptyEntryValue();
                     const range = getAppliedRange(param, orderDetails.pacientes);
-                    const value = entryValues[param.id];
-                    const status = value !== undefined ? classifyValue(value, range) : null;
-                    
+                    const status = getStatusPreview(param);
+                    const resultType: ResultType = param.result_type || 'numeric';
+
                     return (
-                      <div key={param.id} className="grid grid-cols-12 gap-4 items-center bg-slate-50/50 p-3 rounded-lg border border-slate-100">
-                        <div className="col-span-5">
-                          <Label className="text-sm font-bold text-slate-700">{param.name}</Label>
-                          <div className="flex gap-2 text-[10px] font-mono text-slate-500">
-                            <span>Unidad: {param.unit}</span>
-                            {range && <span>Ref: [{range.min} - {range.max}]</span>}
+                      <div
+                        key={param.id}
+                        className="grid grid-cols-12 gap-4 items-start bg-slate-50/50 p-3 rounded-lg border border-slate-100"
+                      >
+                        <div className="col-span-12 md:col-span-4">
+                          <Label className="text-sm font-bold text-slate-700">
+                            {param.name}
+                          </Label>
+
+                          <div className="flex flex-wrap gap-2 text-[10px] font-mono text-slate-500 mt-1">
+                            <span>Tipo: {resultType}</span>
+                            {resultType === 'numeric' && (
+                              <span>Unidad: {param.unit || '—'}</span>
+                            )}
+                            {resultType === 'numeric' && range && (
+                              <span>Ref: [{range.min} - {range.max}]</span>
+                            )}
                           </div>
                         </div>
-                        <div className="col-span-4">
-                          <Input
-                            type="number"
-                            className="bg-white border-slate-200"
-                            placeholder="0.00"
-                            value={entryValues[param.id] || ''}
-                            onChange={e => setEntryValues(prev => ({ ...prev, [param.id]: Number(e.target.value) }))}
-                          />
+
+                        <div className="col-span-12 md:col-span-5">
+                          {resultType === 'numeric' && (
+                            <Input
+                              type="number"
+                              step="any"
+                              className="bg-white border-slate-200"
+                              placeholder="0.00"
+                              value={item.value_numeric}
+                              onChange={e =>
+                                updateEntryValue(param.id, 'value_numeric', e.target.value)
+                              }
+                            />
+                          )}
+
+                          {resultType === 'boolean' && (
+                            <Select
+                              value={item.value_boolean}
+                              onValueChange={value =>
+                                updateEntryValue(
+                                  param.id,
+                                  'value_boolean',
+                                  value as '' | 'true' | 'false'
+                                )
+                              }
+                            >
+                              <SelectTrigger className="bg-white">
+                                <SelectValue placeholder="Seleccione un valor" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="true">
+                                  {param.bool_true_label || 'Positivo'}
+                                </SelectItem>
+                                <SelectItem value="false">
+                                  {param.bool_false_label || 'Negativo'}
+                                </SelectItem>
+                              </SelectContent>
+                            </Select>
+                          )}
+
+                          {resultType === 'text' && (
+                            <Textarea
+                              className="bg-white border-slate-200 min-h-[90px]"
+                              placeholder="Ingrese el resultado..."
+                              value={item.value_text}
+                              onChange={e =>
+                                updateEntryValue(param.id, 'value_text', e.target.value)
+                              }
+                            />
+                          )}
+
+                          {param.allow_observation && (
+                            <div className="mt-3">
+                              <Label className="text-xs font-semibold text-slate-600">
+                                Observación
+                              </Label>
+                              <Textarea
+                                className="bg-white border-slate-200 min-h-[70px] mt-1"
+                                placeholder="Observación opcional..."
+                                value={item.observation}
+                                onChange={e =>
+                                  updateEntryValue(param.id, 'observation', e.target.value)
+                                }
+                              />
+                            </div>
+                          )}
                         </div>
-                        <div className="col-span-3">
+
+                        <div className="col-span-12 md:col-span-3">
                           {status && (
-                            <Badge className={`w-full justify-center ${
-                              status === 'normal' ? 'bg-emerald-500' : 'bg-rose-500'
-                            } text-white border-0 shadow-sm`}>
-                              {status === 'normal' ? 'NORMAL' : status === 'high' ? 'ALTO ↑' : 'BAJO ↓'}
+                            <Badge
+                              className={`w-full justify-center ${
+                                status === 'normal'
+                                  ? 'bg-emerald-500'
+                                  : status === 'high'
+                                  ? 'bg-rose-500'
+                                  : status === 'low'
+                                  ? 'bg-amber-500'
+                                  : status === 'positive'
+                                  ? 'bg-rose-500'
+                                  : status === 'negative'
+                                  ? 'bg-emerald-500'
+                                  : 'bg-slate-600'
+                              } text-white border-0 shadow-sm`}
+                            >
+                              {status === 'normal' && 'NORMAL'}
+                              {status === 'high' && 'ALTO ↑'}
+                              {status === 'low' && 'BAJO ↓'}
+                              {status === 'positive' && (param.bool_true_label || 'POSITIVO')}
+                              {status === 'negative' && (param.bool_false_label || 'NEGATIVO')}
+                              {status === 'text' && 'TEXTO'}
                             </Badge>
                           )}
                         </div>
@@ -258,12 +875,20 @@ export default function ResultsPage() {
                 </div>
               </div>
             ))}
-            
-            <Button 
-              onClick={handleSaveResults} 
+
+            <Button
+              onClick={handleSaveResults}
+              disabled={saving}
               className="w-full gradient-clinical text-primary-foreground border-0 h-12 text-lg shadow-lg mt-6"
             >
-              Validar y Finalizar Orden
+              {saving ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Guardando resultados...
+                </>
+              ) : (
+                'Validar y Finalizar Orden'
+              )}
             </Button>
           </div>
         </DialogContent>

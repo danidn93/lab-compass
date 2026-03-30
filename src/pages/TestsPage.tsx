@@ -11,6 +11,7 @@ import { Search, Eye, Plus, Pencil, Trash2, X, Loader2, ChevronDown, ChevronUp }
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
+import { Checkbox } from '@/components/ui/checkbox';
 
 interface RangeForm {
   id: string;
@@ -25,6 +26,11 @@ interface ParameterForm {
   id: string;
   name: string;
   unit: string;
+  result_type: 'numeric' | 'boolean' | 'text';
+  bool_true_label: string;
+  bool_false_label: string;
+  allow_observation: boolean;
+  sort_order: string;
   ranges: RangeForm[];
 }
 
@@ -46,6 +52,11 @@ const emptyParam = (): ParameterForm => ({
   id: crypto.randomUUID(),
   name: '',
   unit: '',
+  result_type: 'numeric',
+  bool_true_label: 'Positivo',
+  bool_false_label: 'Negativo',
+  allow_observation: false,
+  sort_order: '0',
   ranges: [emptyRange()],
 });
 
@@ -61,14 +72,12 @@ function safeNumber(value: any, fallback = 0): number {
 
 function obtenerCodigoPorcentajeIva(porcentaje: number): string {
   const p = Number(porcentaje);
-
   if (p === 0) return '0';
   if (p === 12) return '2';
   if (p === 14) return '3';
   if (p === 15) return '4';
   if (p === 5) return '5';
   if (p === 13) return '10';
-
   throw new Error(`Tarifa IVA no soportada: ${p}%`);
 }
 
@@ -81,7 +90,6 @@ export default function TestsPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  // Form state
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [price, setPrice] = useState('');
@@ -109,9 +117,14 @@ export default function TestsPage() {
         `)
         .order('name');
 
-      const { data: reagentsData } = await supabase.from('reactivos').select('*');
+      const { data: reagentsData, error: reagentsError } = await supabase
+        .from('reactivos')
+        .select('*')
+        .order('name');
 
       if (testsError) throw testsError;
+      if (reagentsError) throw reagentsError;
+
       setTests(testsData || []);
       setReagents(reagentsData || []);
     } catch (error: any) {
@@ -127,7 +140,6 @@ export default function TestsPage() {
 
   const resetForm = () => {
     const firstParam = emptyParam();
-
     setName('');
     setDescription('');
     setPrice('');
@@ -146,33 +158,43 @@ export default function TestsPage() {
 
   const openEdit = (test: any) => {
     setEditingId(test.id);
-    setName(test.name);
+    setName(test.name || '');
     setDescription(test.description || '');
     setPrice(String(test.price ?? ''));
     setPorcentajeIva(String(test.porcentaje_iva ?? 15));
     setObjetoImpuesto(String(test.objeto_impuesto ?? '2'));
 
-    const mappedParams = (test.parameters?.length ? test.parameters : [emptyParam()]).map((p: any) => ({
+    const mappedParams = (test.parameters?.length ? test.parameters : [emptyParam()]).map((p: any, index: number) => ({
       id: p.id || crypto.randomUUID(),
       name: p.name || '',
       unit: p.unit || '',
-      ranges: (p.ranges?.length ? p.ranges : [emptyRange()]).map((r: any) => ({
-        id: r.id || crypto.randomUUID(),
-        sex: r.sex,
-        min_age: String(r.min_age ?? 0),
-        max_age: String(r.max_age ?? 120),
-        min_value: String(r.min_value ?? ''),
-        max_value: String(r.max_value ?? ''),
-      })),
+      result_type: p.result_type || 'numeric',
+      bool_true_label: p.bool_true_label || 'Positivo',
+      bool_false_label: p.bool_false_label || 'Negativo',
+      allow_observation: !!p.allow_observation,
+      sort_order: String(p.sort_order ?? index),
+      ranges:
+        p.result_type === 'numeric'
+          ? (p.ranges?.length ? p.ranges : [emptyRange()]).map((r: any) => ({
+              id: r.id || crypto.randomUUID(),
+              sex: r.sex,
+              min_age: String(r.min_age ?? 0),
+              max_age: String(r.max_age ?? 120),
+              min_value: String(r.min_value ?? ''),
+              max_value: String(r.max_value ?? ''),
+            }))
+          : [],
     }));
 
     setParameters(mappedParams);
-    setOpenParamId(null);
+    setOpenParamId(mappedParams[0]?.id || null);
 
-    setTestReagents((test.reagents || []).map((r: any) => ({
-      reagent_id: r.reagent_id,
-      quantity_used: String(r.quantity_used),
-    })));
+    setTestReagents(
+      (test.reagents || []).map((r: any) => ({
+        reagent_id: r.reagent_id,
+        quantity_used: String(r.quantity_used ?? '1'),
+      }))
+    );
 
     setFormOpen(true);
   };
@@ -181,6 +203,27 @@ export default function TestsPage() {
     if (!name.trim() || !price.trim()) {
       toast.error('Nombre y precio son obligatorios');
       return;
+    }
+
+    for (const p of parameters) {
+      if (!p.name.trim()) {
+        toast.error('Todos los parámetros deben tener nombre');
+        return;
+      }
+
+      if (p.result_type === 'numeric') {
+        if (!p.unit.trim()) {
+          toast.error(`El parámetro "${p.name}" debe tener unidad`);
+          return;
+        }
+
+        for (const r of p.ranges) {
+          if (r.min_value === '' || r.max_value === '') {
+            toast.error(`Completa los rangos del parámetro "${p.name}"`);
+            return;
+          }
+        }
+      }
     }
 
     try {
@@ -204,32 +247,59 @@ export default function TestsPage() {
       if (testError) throw testError;
       const testId = testData.id;
 
-      await supabase.from('parametros_prueba').delete().eq('test_id', testId);
+      const { error: deleteRangesError } = await supabase
+        .from('rangos_referencia')
+        .delete()
+        .in(
+          'parameter_id',
+          (
+            await supabase.from('parametros_prueba').select('id').eq('test_id', testId)
+          ).data?.map((x: any) => x.id) || []
+        );
+
+      if (deleteRangesError) throw deleteRangesError;
+
+      const { error: deleteParamsError } = await supabase
+        .from('parametros_prueba')
+        .delete()
+        .eq('test_id', testId);
+
+      if (deleteParamsError) throw deleteParamsError;
 
       for (const p of parameters) {
         const { data: pData, error: pError } = await supabase
           .from('parametros_prueba')
           .insert({
             test_id: testId,
-            name: p.name,
-            unit: p.unit,
+            name: p.name.trim(),
+            unit: p.result_type === 'numeric' ? p.unit.trim() : null,
+            result_type: p.result_type,
+            bool_true_label: p.result_type === 'boolean' ? p.bool_true_label.trim() || 'Positivo' : null,
+            bool_false_label: p.result_type === 'boolean' ? p.bool_false_label.trim() || 'Negativo' : null,
+            allow_observation: !!p.allow_observation,
+            sort_order: Number(p.sort_order || 0),
           })
           .select()
           .single();
 
         if (pError) throw pError;
 
-        const rangesToInsert = p.ranges.map(r => ({
-          parameter_id: pData.id,
-          sex: r.sex,
-          min_age: Number(r.min_age),
-          max_age: Number(r.max_age),
-          min_value: Number(r.min_value),
-          max_value: Number(r.max_value),
-        }));
+        if (p.result_type === 'numeric' && p.ranges.length > 0) {
+          const rangesToInsert = p.ranges.map(r => ({
+            parameter_id: pData.id,
+            sex: r.sex,
+            min_age: Number(r.min_age),
+            max_age: Number(r.max_age),
+            min_value: Number(r.min_value),
+            max_value: Number(r.max_value),
+          }));
 
-        const { error: rangesError } = await supabase.from('rangos_referencia').insert(rangesToInsert);
-        if (rangesError) throw rangesError;
+          const { error: rangesError } = await supabase
+            .from('rangos_referencia')
+            .insert(rangesToInsert);
+
+          if (rangesError) throw rangesError;
+        }
       }
 
       await supabase.from('prueba_reactivos').delete().eq('test_id', testId);
@@ -243,7 +313,10 @@ export default function TestsPage() {
         }));
 
       if (reagentsToInsert.length > 0) {
-        const { error: reagentsError } = await supabase.from('prueba_reactivos').insert(reagentsToInsert);
+        const { error: reagentsError } = await supabase
+          .from('prueba_reactivos')
+          .insert(reagentsToInsert);
+
         if (reagentsError) throw reagentsError;
       }
 
@@ -258,16 +331,41 @@ export default function TestsPage() {
 
   const handleDelete = async (id: string) => {
     if (!confirm('¿Seguro que deseas eliminar esta prueba?')) return;
+
     const { error } = await supabase.from('pruebas').delete().eq('id', id);
-    if (error) toast.error('Error al eliminar');
-    else {
+
+    if (error) {
+      toast.error('Error al eliminar');
+    } else {
       toast.success('Prueba eliminada');
       fetchData();
     }
   };
 
   const updateParam = (idx: number, field: keyof ParameterForm, value: any) => {
-    setParameters(prev => prev.map((p, i) => (i === idx ? { ...p, [field]: value } : p)));
+    setParameters(prev =>
+      prev.map((p, i) => {
+        if (i !== idx) return p;
+
+        const updated = { ...p, [field]: value };
+
+        if (field === 'result_type') {
+          if (value === 'numeric') {
+            updated.ranges = p.ranges.length ? p.ranges : [emptyRange()];
+          } else {
+            updated.unit = '';
+            updated.ranges = [];
+          }
+
+          if (value === 'boolean') {
+            updated.bool_true_label = p.bool_true_label || 'Positivo';
+            updated.bool_false_label = p.bool_false_label || 'Negativo';
+          }
+        }
+
+        return updated;
+      })
+    );
   };
 
   const updateRange = (pIdx: number, rIdx: number, field: keyof RangeForm, value: any) => {
@@ -310,7 +408,6 @@ export default function TestsPage() {
     setParameters(prev =>
       prev.map((p, pi) => {
         if (pi !== pIdx) return p;
-
         const nextRanges = p.ranges.filter((_, ri) => ri !== rIdx);
         return {
           ...p,
@@ -430,30 +527,53 @@ export default function TestsPage() {
 
               <div>
                 <h4 className="font-bold mb-3 flex items-center gap-2">
-                  Parámetros <Badge variant="secondary">Ref</Badge>
+                  Parámetros <Badge variant="secondary">Config</Badge>
                 </h4>
 
                 {(selectedTest.parameters || []).map((param: any) => (
                   <div key={param.id} className="mb-4 p-4 rounded-xl border bg-slate-50/50">
                     <p className="font-bold text-slate-700">
-                      {param.name}{' '}
-                      <span className="text-muted-foreground font-normal">({param.unit})</span>
+                      {param.name}
+                      <span className="text-muted-foreground font-normal ml-2">
+                        [{param.result_type || 'numeric'}]
+                      </span>
+                      {param.unit ? (
+                        <span className="text-muted-foreground font-normal ml-2">({param.unit})</span>
+                      ) : null}
                     </p>
-                    <div className="mt-2 grid grid-cols-1 gap-1">
-                      {(param.ranges || []).map((r: any) => (
-                        <p
-                          key={r.id}
-                          className="text-xs text-slate-500 bg-white p-2 rounded border border-slate-100 flex justify-between"
-                        >
-                          <span>
-                            {r.sex === 'both' ? 'Ambos' : r.sex === 'M' ? 'Masculino' : 'Femenino'} | {r.min_age}-{r.max_age} años
-                          </span>
-                          <span className="font-bold text-slate-800">
-                            {r.min_value} - {r.max_value} {param.unit}
-                          </span>
-                        </p>
-                      ))}
-                    </div>
+
+                    {param.result_type === 'numeric' && (
+                      <div className="mt-2 grid grid-cols-1 gap-1">
+                        {(param.ranges || []).map((r: any) => (
+                          <p
+                            key={r.id}
+                            className="text-xs text-slate-500 bg-white p-2 rounded border border-slate-100 flex justify-between"
+                          >
+                            <span>
+                              {r.sex === 'both' ? 'Ambos' : r.sex === 'M' ? 'Masculino' : 'Femenino'} | {r.min_age}-{r.max_age} años
+                            </span>
+                            <span className="font-bold text-slate-800">
+                              {r.min_value} - {r.max_value} {param.unit}
+                            </span>
+                          </p>
+                        ))}
+                      </div>
+                    )}
+
+                    {param.result_type === 'boolean' && (
+                      <div className="mt-2 flex gap-2">
+                        <Badge variant="outline">{param.bool_true_label || 'Positivo'}</Badge>
+                        <Badge variant="outline">{param.bool_false_label || 'Negativo'}</Badge>
+                      </div>
+                    )}
+
+                    {param.result_type === 'text' && (
+                      <p className="text-xs text-slate-500 mt-2">Valor textual libre</p>
+                    )}
+
+                    {param.allow_observation && (
+                      <p className="text-xs text-amber-600 mt-2">Permite observación</p>
+                    )}
                   </div>
                 ))}
               </div>
@@ -474,7 +594,7 @@ export default function TestsPage() {
         <DialogContent className="max-w-4xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="font-display text-xl">
-              {editingId ? 'Editar Configuración SQL' : 'Nueva Prueba'}
+              {editingId ? 'Editar prueba' : 'Nueva Prueba'}
             </DialogTitle>
           </DialogHeader>
 
@@ -567,7 +687,7 @@ export default function TestsPage() {
                           {param.name?.trim() || 'Nuevo parámetro'}
                         </div>
                         <div className="text-xs text-muted-foreground">
-                          Unidad: {param.unit?.trim() || '—'} • Rangos: {param.ranges.length}
+                          Tipo: {param.result_type} • Orden: {param.sort_order}
                         </div>
                       </div>
 
@@ -593,102 +713,177 @@ export default function TestsPage() {
 
                     {isOpen && (
                       <div className="px-4 pb-4 border-t bg-white/70">
-                        <div className="grid grid-cols-2 gap-4 mb-4 mt-4">
+                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4 mt-4">
                           <div>
                             <Label className="text-xs font-semibold">Nombre</Label>
                             <Input value={param.name} onChange={e => updateParam(pIdx, 'name', e.target.value)} />
                           </div>
+
+                          <div>
+                            <Label className="text-xs font-semibold">Tipo de resultado</Label>
+                            <Select
+                              value={param.result_type}
+                              onValueChange={v => updateParam(pIdx, 'result_type', v as 'numeric' | 'boolean' | 'text')}
+                            >
+                              <SelectTrigger>
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="numeric">Numérico</SelectItem>
+                                <SelectItem value="boolean">Booleano</SelectItem>
+                                <SelectItem value="text">Texto</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+
                           <div>
                             <Label className="text-xs font-semibold">Unidad</Label>
-                            <Input value={param.unit} onChange={e => updateParam(pIdx, 'unit', e.target.value)} />
+                            <Input
+                              value={param.unit}
+                              onChange={e => updateParam(pIdx, 'unit', e.target.value)}
+                              disabled={param.result_type !== 'numeric'}
+                              placeholder={param.result_type === 'numeric' ? 'mg/dL, %, etc.' : 'No aplica'}
+                            />
+                          </div>
+
+                          <div>
+                            <Label className="text-xs font-semibold">Orden</Label>
+                            <Input
+                              type="number"
+                              value={param.sort_order}
+                              onChange={e => updateParam(pIdx, 'sort_order', e.target.value)}
+                            />
                           </div>
                         </div>
 
-                        <div className="space-y-2">
-                          <div className="flex justify-between items-center">
-                            <span className="text-xs font-bold text-slate-500">Rangos de Referencia</span>
-                            <Button
-                              type="button"
-                              variant="ghost"
-                              className="h-6 text-[10px]"
-                              onClick={() => {
-                                setParameters(prev =>
-                                  prev.map((p, pi) =>
-                                    pi === pIdx ? { ...p, ranges: [emptyRange(), ...p.ranges] } : p
-                                  )
-                                );
-                              }}
-                            >
-                              + Añadir Rango
-                            </Button>
-                          </div>
-
-                          {param.ranges.map((range, rIdx) => (
-                            <div key={range.id} className="grid grid-cols-6 gap-2 items-end bg-white p-2 rounded-lg border">
-                              <div className="col-span-1">
-                                <Label className="text-[10px]">Sexo</Label>
-                                <Select value={range.sex} onValueChange={v => updateRange(pIdx, rIdx, 'sex', v as any)}>
-                                  <SelectTrigger className="h-8 text-xs">
-                                    <SelectValue />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    <SelectItem value="both">Ambos</SelectItem>
-                                    <SelectItem value="M">Masculino</SelectItem>
-                                    <SelectItem value="F">Femenino</SelectItem>
-                                  </SelectContent>
-                                </Select>
-                              </div>
-
-                              <div className="col-span-1">
-                                <Label className="text-[10px]">Edad Mín</Label>
-                                <Input
-                                  className="h-8 text-xs"
-                                  value={range.min_age}
-                                  onChange={e => updateRange(pIdx, rIdx, 'min_age', e.target.value)}
-                                />
-                              </div>
-
-                              <div className="col-span-1">
-                                <Label className="text-[10px]">Edad Máx</Label>
-                                <Input
-                                  className="h-8 text-xs"
-                                  value={range.max_age}
-                                  onChange={e => updateRange(pIdx, rIdx, 'max_age', e.target.value)}
-                                />
-                              </div>
-
-                              <div className="col-span-1">
-                                <Label className="text-[10px]">Val Mín</Label>
-                                <Input
-                                  className="h-8 text-xs"
-                                  value={range.min_value}
-                                  onChange={e => updateRange(pIdx, rIdx, 'min_value', e.target.value)}
-                                />
-                              </div>
-
-                              <div className="col-span-1">
-                                <Label className="text-[10px]">Val Máx</Label>
-                                <Input
-                                  className="h-8 text-xs"
-                                  value={range.max_value}
-                                  onChange={e => updateRange(pIdx, rIdx, 'max_value', e.target.value)}
-                                />
-                              </div>
-
-                              <div className="col-span-1 text-right">
-                                <Button
-                                  type="button"
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-8 w-8 text-red-300"
-                                  onClick={() => removeRange(pIdx, rIdx)}
-                                >
-                                  <Trash2 className="w-3 h-3" />
-                                </Button>
-                              </div>
+                        {param.result_type === 'boolean' && (
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                            <div>
+                              <Label className="text-xs font-semibold">Etiqueta verdadero</Label>
+                              <Input
+                                value={param.bool_true_label}
+                                onChange={e => updateParam(pIdx, 'bool_true_label', e.target.value)}
+                                placeholder="Ej: Positivo / Sí / Presencia"
+                              />
                             </div>
-                          ))}
+                            <div>
+                              <Label className="text-xs font-semibold">Etiqueta falso</Label>
+                              <Input
+                                value={param.bool_false_label}
+                                onChange={e => updateParam(pIdx, 'bool_false_label', e.target.value)}
+                                placeholder="Ej: Negativo / No / Ausencia"
+                              />
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="flex items-center gap-2 mb-4">
+                          <Checkbox
+                            checked={param.allow_observation}
+                            onCheckedChange={checked => updateParam(pIdx, 'allow_observation', !!checked)}
+                          />
+                          <Label className="text-xs font-semibold">Permitir observación para este parámetro</Label>
                         </div>
+
+                        {param.result_type === 'numeric' && (
+                          <div className="space-y-2">
+                            <div className="flex justify-between items-center">
+                              <span className="text-xs font-bold text-slate-500">Rangos de Referencia</span>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                className="h-6 text-[10px]"
+                                onClick={() => {
+                                  setParameters(prev =>
+                                    prev.map((p, pi) =>
+                                      pi === pIdx ? { ...p, ranges: [emptyRange(), ...p.ranges] } : p
+                                    )
+                                  );
+                                }}
+                              >
+                                + Añadir Rango
+                              </Button>
+                            </div>
+
+                            {param.ranges.map((range, rIdx) => (
+                              <div key={range.id} className="grid grid-cols-6 gap-2 items-end bg-white p-2 rounded-lg border">
+                                <div className="col-span-1">
+                                  <Label className="text-[10px]">Sexo</Label>
+                                  <Select value={range.sex} onValueChange={v => updateRange(pIdx, rIdx, 'sex', v as any)}>
+                                    <SelectTrigger className="h-8 text-xs">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="both">Ambos</SelectItem>
+                                      <SelectItem value="M">Masculino</SelectItem>
+                                      <SelectItem value="F">Femenino</SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+
+                                <div className="col-span-1">
+                                  <Label className="text-[10px]">Edad Mín</Label>
+                                  <Input
+                                    className="h-8 text-xs"
+                                    value={range.min_age}
+                                    onChange={e => updateRange(pIdx, rIdx, 'min_age', e.target.value)}
+                                  />
+                                </div>
+
+                                <div className="col-span-1">
+                                  <Label className="text-[10px]">Edad Máx</Label>
+                                  <Input
+                                    className="h-8 text-xs"
+                                    value={range.max_age}
+                                    onChange={e => updateRange(pIdx, rIdx, 'max_age', e.target.value)}
+                                  />
+                                </div>
+
+                                <div className="col-span-1">
+                                  <Label className="text-[10px]">Val Mín</Label>
+                                  <Input
+                                    className="h-8 text-xs"
+                                    value={range.min_value}
+                                    onChange={e => updateRange(pIdx, rIdx, 'min_value', e.target.value)}
+                                  />
+                                </div>
+
+                                <div className="col-span-1">
+                                  <Label className="text-[10px]">Val Máx</Label>
+                                  <Input
+                                    className="h-8 text-xs"
+                                    value={range.max_value}
+                                    onChange={e => updateRange(pIdx, rIdx, 'max_value', e.target.value)}
+                                  />
+                                </div>
+
+                                <div className="col-span-1 text-right">
+                                  <Button
+                                    type="button"
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8 text-red-300"
+                                    onClick={() => removeRange(pIdx, rIdx)}
+                                  >
+                                    <Trash2 className="w-3 h-3" />
+                                  </Button>
+                                </div>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+
+                        {param.result_type === 'text' && (
+                          <div className="rounded-lg border p-3 bg-slate-50 text-sm text-muted-foreground">
+                            Este parámetro aceptará un valor textual libre en el registro del resultado.
+                          </div>
+                        )}
+
+                        {param.result_type === 'boolean' && (
+                          <div className="rounded-lg border p-3 bg-slate-50 text-sm text-muted-foreground">
+                            Este parámetro aceptará un valor verdadero/falso con las etiquetas configuradas.
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

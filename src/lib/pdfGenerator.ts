@@ -25,8 +25,10 @@ export type PdfOrder = {
   code: string;
   accessKey?: string;
   date: string;
-  created_at?: string;
+  created_at?: string | null;
 };
+
+export type PdfResultType = "numeric" | "boolean" | "text";
 
 export type PdfResultDetail = {
   id: string;
@@ -36,7 +38,9 @@ export type PdfResultDetail = {
   appliedRangeMin?: string | number | null;
   appliedRangeMax?: string | number | null;
   unit?: string | null;
-  status?: "normal" | "high" | "low" | string | null;
+  status?: "normal" | "high" | "low" | "positive" | "negative" | "text" | string | null;
+  observation?: string | null;
+  resultType?: PdfResultType;
 };
 
 export type PdfOrderResult = {
@@ -45,6 +49,16 @@ export type PdfOrderResult = {
   testName: string;
   notes?: string | null;
   details: PdfResultDetail[];
+  date?: string | null;
+};
+
+const PAGE = {
+  width: 210,
+  height: 297,
+  contentTop: 112,
+  contentBottom: 236,
+  dateY: 262,
+  attentY: 242,
 };
 
 function safeText(value: any): string {
@@ -90,7 +104,8 @@ function addTransparentWatermark(
   x = 48,
   y = 110,
   w = 120,
-  h = 120
+  h = 120,
+  opacity = 0.08
 ) {
   const img = normalizeImageData(base64);
   const format = imageFormatFromBase64(img);
@@ -98,7 +113,7 @@ function addTransparentWatermark(
 
   try {
     doc.saveGraphicsState();
-    (doc as any).setGState?.(new (doc as any).GState({ opacity: 0.08 }));
+    (doc as any).setGState?.(new (doc as any).GState({ opacity }));
     doc.addImage(img, format, x, y, w, h);
     doc.restoreGraphicsState();
   } catch {
@@ -110,9 +125,29 @@ function addTransparentWatermark(
   }
 }
 
+function addPageBackground(doc: jsPDF, config: PdfLabConfig) {
+  const bg = normalizeImageData(config.logo) || normalizeImageData(config.sello);
+  if (!bg) return;
+
+  const format = imageFormatFromBase64(bg);
+  if (!format) return;
+
+  try {
+    doc.saveGraphicsState();
+    (doc as any).setGState?.(new (doc as any).GState({ opacity: 0.06 }));
+    doc.addImage(bg, format, 35, 85, 140, 140);
+    doc.restoreGraphicsState();
+  } catch {
+    try {
+      doc.addImage(bg, format, 35, 85, 140, 140);
+    } catch {
+      // ignorar
+    }
+  }
+}
+
 function splitLabName(fullName: string) {
   const clean = safeText(fullName);
-
   const match = clean.match(/^(.*?)\s*"(.*?)"\s*$/);
 
   if (match) {
@@ -138,15 +173,11 @@ function addHeader(doc: jsPDF, config: PdfLabConfig) {
   doc.setTextColor(150, 36, 74);
   doc.setFont("times", "bold");
   doc.setFontSize(16);
-  doc.text(mainName.toUpperCase(), 105, 15, {
-    align: "center",
-  });
+  doc.text(mainName.toUpperCase(), 105, 15, { align: "center" });
 
   doc.setFont("times", "bold");
   doc.setFontSize(26);
-  doc.text(`"${commercialName.toUpperCase()}"`, 105, 24, {
-    align: "center",
-  });
+  doc.text(`"${commercialName.toUpperCase()}"`, 105, 24, { align: "center" });
 
   doc.setTextColor(36, 94, 168);
   doc.setFont("times", "italic");
@@ -229,11 +260,107 @@ function splitLabelValue(line: string): { label: string; value: string } | null 
   return { label, value };
 }
 
-function drawNotesAsClassicReport(doc: jsPDF, notes?: string | null, startY = 108) {
-  const text = safeText(notes);
-  if (!text) return startY;
+function buildDetailValue(d: PdfResultDetail) {
+  const resultType: PdfResultType = d.resultType || "numeric";
+  const value = safeText(d.value);
+  const unit = safeText(d.unit);
 
-  const lines = text
+  if (resultType === "numeric") {
+    return [value, unit].filter(Boolean).join(" ") || "—";
+  }
+
+  return value || "—";
+}
+
+function buildReferenceText(d: PdfResultDetail) {
+  const resultType: PdfResultType = d.resultType || "numeric";
+  if (resultType !== "numeric") return "";
+
+  const min = safeText(d.appliedRangeMin);
+  const max = safeText(d.appliedRangeMax);
+  const unit = safeText(d.unit);
+
+  if (!min && !max) return "";
+  return `Rango ref.: ${min || "—"} - ${max || "—"}${unit ? ` ${unit}` : ""}`;
+}
+
+function estimateWrappedHeight(
+  doc: jsPDF,
+  text: string,
+  width: number,
+  lineHeight = 5,
+  minHeight = 8
+) {
+  const wrapped = doc.splitTextToSize(text || "—", width);
+  return {
+    wrapped,
+    height: Math.max(minHeight, wrapped.length * lineHeight),
+  };
+}
+
+function estimateNoteLineHeight(doc: jsPDF, line: string) {
+  const parsed = splitLabelValue(line);
+
+  if (parsed) {
+    const wrapped = doc.splitTextToSize(parsed.value || "—", 110);
+    return {
+      parsed,
+      wrapped,
+      height: Math.max(8, wrapped.length * 5),
+    };
+  }
+
+  const wrapped = doc.splitTextToSize(line, 150);
+  return {
+    parsed: null,
+    wrapped,
+    height: wrapped.length * 5 + 2,
+  };
+}
+
+function addResultsPageScaffold(
+  doc: jsPDF,
+  config: PdfLabConfig,
+  patient: PdfPatient,
+  testName: string
+) {
+  addHeader(doc, config);
+  drawPatientLine(doc, patient);
+  drawResultFrame(doc, 78, 270);
+  addPageBackground(doc, config);
+
+  doc.setTextColor(70, 70, 70);
+  doc.setFont("times", "bold");
+  doc.setFontSize(18);
+  doc.text(buildPrintableExamTitle(testName), 105, 95, { align: "center" });
+}
+
+function ensureSpaceForNextBlock(
+  doc: jsPDF,
+  currentY: number,
+  neededHeight: number,
+  config: PdfLabConfig,
+  patient: PdfPatient,
+  testName: string
+) {
+  if (currentY + neededHeight <= PAGE.contentBottom) {
+    return { y: currentY, pageBreak: false };
+  }
+
+  doc.addPage();
+  addResultsPageScaffold(doc, config, patient, testName);
+  return { y: PAGE.contentTop, pageBreak: true };
+}
+
+function drawNotesWithPagination(
+  doc: jsPDF,
+  notes: string,
+  startY: number,
+  config: PdfLabConfig,
+  patient: PdfPatient,
+  testName: string
+) {
+  const lines = safeText(notes)
     .split(/\r?\n/)
     .map((l) => l.trim())
     .filter(Boolean);
@@ -245,52 +372,103 @@ function drawNotesAsClassicReport(doc: jsPDF, notes?: string | null, startY = 10
   doc.setFontSize(11);
 
   lines.forEach((line) => {
-    const parsed = splitLabelValue(line);
+    const estimated = estimateNoteLineHeight(doc, line);
+    const check = ensureSpaceForNextBlock(doc, y, estimated.height + 2, config, patient, testName);
+    y = check.y;
 
-    if (parsed) {
-      doc.text(parsed.label, 22, y);
+    if (estimated.parsed) {
+      doc.setFont("times", "bold");
+      doc.setFontSize(11);
+      doc.setTextColor(70, 70, 70);
+      doc.text(estimated.parsed.label, 22, y);
       doc.text(":", 72, y);
 
       doc.setFont("times", "normal");
-      const wrapped = doc.splitTextToSize(parsed.value || "—", 110);
-      doc.text(wrapped, 78, y);
-
-      y += Math.max(8, wrapped.length * 5);
-      doc.setFont("times", "bold");
+      doc.text(estimated.wrapped, 78, y);
+      y += estimated.height;
     } else {
       doc.setFont("times", "normal");
-      const wrapped = doc.splitTextToSize(line, 150);
-      doc.text(wrapped, 22, y);
-      y += wrapped.length * 5 + 2;
-      doc.setFont("times", "bold");
+      doc.setFontSize(11);
+      doc.setTextColor(70, 70, 70);
+      doc.text(estimated.wrapped, 22, y);
+      y += estimated.height;
     }
   });
 
   return y;
 }
 
-function drawStructuredDetailsClassic(doc: jsPDF, details: PdfResultDetail[], startY = 108) {
+function drawStructuredDetailsWithPagination(
+  doc: jsPDF,
+  details: PdfResultDetail[],
+  startY: number,
+  config: PdfLabConfig,
+  patient: PdfPatient,
+  testName: string
+) {
   let y = startY;
-
-  doc.setTextColor(70, 70, 70);
-  doc.setFont("times", "bold");
-  doc.setFontSize(11);
 
   details.forEach((d) => {
     const label = safeText(d.parameterName || "Resultado");
-    const unit = safeText(d.unit);
-    const value = safeText(d.value);
-    const finalValue = [value, unit].filter(Boolean).join(" ");
+    const finalValue = buildDetailValue(d);
+    const referenceText = buildReferenceText(d);
+    const observation = safeText(d.observation);
+    const resultType: PdfResultType = d.resultType || "numeric";
 
+    const valueMeasure = estimateWrappedHeight(doc, finalValue, 110, 5, 8);
+    let blockHeight = valueMeasure.height + 2;
+
+    let refMeasure:
+      | { wrapped: string[]; height: number }
+      | null = null;
+
+    let obsMeasure:
+      | { wrapped: string[]; height: number }
+      | null = null;
+
+    if (referenceText && resultType === "numeric") {
+      refMeasure = estimateWrappedHeight(doc, referenceText, 110, 4, 4);
+      blockHeight += refMeasure.height + 2;
+    }
+
+    if (observation) {
+      obsMeasure = estimateWrappedHeight(doc, observation, 96, 4.5, 7);
+      blockHeight += obsMeasure.height + 5;
+    }
+
+    const check = ensureSpaceForNextBlock(doc, y, blockHeight, config, patient, testName);
+    y = check.y;
+
+    doc.setTextColor(70, 70, 70);
+    doc.setFont("times", "bold");
+    doc.setFontSize(11);
     doc.text(label, 22, y);
     doc.text(":", 72, y);
 
     doc.setFont("times", "normal");
-    const wrapped = doc.splitTextToSize(finalValue || "—", 110);
-    doc.text(wrapped, 78, y);
-    y += Math.max(8, wrapped.length * 5);
+    doc.text(valueMeasure.wrapped, 78, y);
+    y += valueMeasure.height;
 
-    doc.setFont("times", "bold");
+    if (refMeasure && resultType === "numeric") {
+      doc.setFont("times", "italic");
+      doc.setFontSize(9);
+      doc.setTextColor(110, 110, 110);
+      doc.text(refMeasure.wrapped, 78, y - 1);
+      y += refMeasure.height + 1;
+    }
+
+    if (obsMeasure && observation) {
+      doc.setTextColor(70, 70, 70);
+      doc.setFont("times", "bold");
+      doc.setFontSize(10);
+      doc.text("Observación:", 78, y);
+
+      doc.setFont("times", "normal");
+      doc.text(obsMeasure.wrapped, 104, y);
+      y += obsMeasure.height + 2;
+    }
+
+    y += 2;
   });
 
   return y;
@@ -357,6 +535,7 @@ export function generateOrderPDF(
   doc.text("ORDEN DE EXÁMENES", 105, 88, { align: "center" });
 
   drawResultFrame(doc, 94, 270);
+  addPageBackground(doc, config);
 
   let y = 108;
 
@@ -389,10 +568,9 @@ export function generateOrderPDF(
   doc.setFont("courier", "bold");
   doc.setFontSize(14);
   doc.setTextColor(50, 50, 50);
-  doc.text(formatDateSpanish(order.created_at || order.date), 20, 262);
+  doc.text(formatDateSpanish(order.created_at || order.date), 20, PAGE.dateY);
 
   drawSignatureBlock(doc, config);
-
   doc.save(`orden_${order.code}.pdf`);
 }
 
@@ -404,50 +582,60 @@ export function generateResultsPDF(
   config: PdfLabConfig
 ) {
   const doc = new jsPDF("p", "mm", "a4");
+  let started = false;
 
-  orderTests.forEach((test, index) => {
+  orderTests.forEach((test) => {
     const result = orderResults.find((r) => r.testId === test.id);
     if (!result) return;
 
-    if (index > 0) doc.addPage();
+    if (started) {
+      doc.addPage();
+    }
+    started = true;
 
-    addHeader(doc, config);
-    drawPatientLine(doc, patient);
-    drawResultFrame(doc, 78, 270);
-    addTransparentWatermark(doc, config.sello, 50, 120, 110, 110);
+    addResultsPageScaffold(doc, config, patient, test.name);
 
-    doc.setTextColor(70, 70, 70);
-    doc.setFont("times", "bold");
-    doc.setFontSize(18);
-    doc.text(buildPrintableExamTitle(test.name), 105, 95, { align: "center" });
-
-    let y = 112;
-
+    let y = PAGE.contentTop;
     const hasNotes = safeText(result.notes);
     const hasDetails = Array.isArray(result.details) && result.details.length > 0;
 
     if (hasNotes) {
-      y = drawNotesAsClassicReport(doc, result.notes, y);
+      y = drawNotesWithPagination(doc, result.notes || "", y, config, patient, test.name);
     } else if (hasDetails) {
-      y = drawStructuredDetailsClassic(doc, result.details, y);
+      y = drawStructuredDetailsWithPagination(
+        doc,
+        result.details,
+        y,
+        config,
+        patient,
+        test.name
+      );
     } else {
       doc.setFont("times", "normal");
       doc.setFontSize(11);
+      doc.setTextColor(70, 70, 70);
       doc.text("Sin resultados detallados.", 22, y);
       y += 8;
     }
 
-    if (y < 236) {
+    const totalPages = doc.getNumberOfPages();
+    doc.setPage(totalPages);
+
+    if (y < PAGE.attentY - 2) {
       doc.setFont("times", "bold");
       doc.setFontSize(11);
       doc.setTextColor(55, 55, 55);
-      doc.text("Atentamente.", 105, 242, { align: "center" });
+      doc.text("Atentamente.", 105, PAGE.attentY, { align: "center" });
     }
 
     doc.setFont("courier", "bold");
     doc.setFontSize(14);
     doc.setTextColor(50, 50, 50);
-    doc.text(formatDateSpanish(order.created_at || order.date), 20, 262);
+    doc.text(
+      formatDateSpanish(result.date || order.created_at || order.date),
+      20,
+      PAGE.dateY
+    );
 
     drawSignatureBlock(doc, config);
   });
