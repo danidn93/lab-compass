@@ -25,6 +25,8 @@ import CatalogoPruebasPage from "@/pages/CatalogoPruebasPage";
 import HistorialPage from "./pages/HistorialPage.tsx";
 import CotizadorPage from "./pages/CotizadorPage.tsx";
 import Usuarios from "./pages/Usuarios.tsx";
+import DoctorsPage from "./pages/DoctorsPage.tsx";
+import OrdersByDoctorPage from "./pages/OrdersByDoctorPage.tsx";
 
 const queryClient = new QueryClient();
 
@@ -42,6 +44,8 @@ function AdminRoutes() {
         <Route path="/results" element={<ResultsPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/usuarios" element={<Usuarios />} />
+        <Route path="/doctores" element={<DoctorsPage />} />
+        <Route path="/orders-by-doctor" element={<OrdersByDoctorPage />} />
       </Routes>
     </AdminLayout>
   );

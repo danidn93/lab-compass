@@ -11,6 +11,8 @@ import {
   FileText,
   Settings,
   UserCog,
+  Stethoscope,
+  FolderKanban,
 } from 'lucide-react';
 import {
   Sidebar,
@@ -30,7 +32,9 @@ const navItems = [
   { title: 'Inventario', url: '/admin/inventory', icon: Package },
   { title: 'Pruebas', url: '/admin/tests', icon: TestTubes },
   { title: 'Pacientes', url: '/admin/patients', icon: Users },
+  { title: 'Médicos', url: '/admin/doctores', icon: Stethoscope },
   { title: 'Órdenes', url: '/admin/orders', icon: ClipboardList },
+  { title: 'Órdenes por médico', url: '/admin/orders-by-doctor', icon: FolderKanban },
   { title: 'Resultados', url: '/admin/results', icon: FileText },
   { title: 'Usuarios', url: '/admin/usuarios', icon: UserCog, adminOnly: true },
   { title: 'Configuración', url: '/admin/settings', icon: Settings },

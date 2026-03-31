@@ -170,6 +170,36 @@ export type Database = {
         }
         Relationships: []
       }
+      doctores: {
+        Row: {
+          activo: boolean
+          created_at: string | null
+          email: string | null
+          especialidad: string | null
+          id: string
+          nombre: string
+          telefono: string | null
+        }
+        Insert: {
+          activo?: boolean
+          created_at?: string | null
+          email?: string | null
+          especialidad?: string | null
+          id?: string
+          nombre: string
+          telefono?: string | null
+        }
+        Update: {
+          activo?: boolean
+          created_at?: string | null
+          email?: string | null
+          especialidad?: string | null
+          id?: string
+          nombre?: string
+          telefono?: string | null
+        }
+        Relationships: []
+      }
       facturas_electronicas: {
         Row: {
           ambiente: string
@@ -462,6 +492,7 @@ export type Database = {
           code: string
           created_at: string | null
           date: string
+          doctor_id: string | null
           factura_estado: string | null
           factura_fecha_autorizacion: string | null
           factura_id: string | null
@@ -485,6 +516,7 @@ export type Database = {
           code: string
           created_at?: string | null
           date?: string
+          doctor_id?: string | null
           factura_estado?: string | null
           factura_fecha_autorizacion?: string | null
           factura_id?: string | null
@@ -508,6 +540,7 @@ export type Database = {
           code?: string
           created_at?: string | null
           date?: string
+          doctor_id?: string | null
           factura_estado?: string | null
           factura_fecha_autorizacion?: string | null
           factura_id?: string | null
@@ -526,6 +559,13 @@ export type Database = {
           total?: number
         }
         Relationships: [
+          {
+            foreignKeyName: "ordenes_doctor_id_fkey"
+            columns: ["doctor_id"]
+            isOneToOne: false
+            referencedRelation: "doctores"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "ordenes_factura_id_fkey"
             columns: ["factura_id"]

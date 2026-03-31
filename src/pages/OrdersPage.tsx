@@ -26,6 +26,7 @@ import {
   RefreshCw,
   UserPlus,
   Wallet,
+  Stethoscope,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import QRCode from 'qrcode';
@@ -77,6 +78,7 @@ export default function OrdersPage() {
   const [orders, setOrders] = useState<any[]>([]);
   const [patients, setPatients] = useState<any[]>([]);
   const [tests, setTests] = useState<any[]>([]);
+  const [doctors, setDoctors] = useState<any[]>([]);
   const [labConfig, setLabConfig] = useState<LabConfig | null>(null);
 
   const [loading, setLoading] = useState(true);
@@ -96,6 +98,7 @@ export default function OrdersPage() {
   const [paymentOrder, setPaymentOrder] = useState<any>(null);
 
   const [selectedPatient, setSelectedPatient] = useState('');
+  const [selectedDoctor, setSelectedDoctor] = useState('');
   const [selectedTests, setSelectedTests] = useState<string[]>([]);
   const [patientSearch, setPatientSearch] = useState('');
   const [testSearch, setTestSearch] = useState('');
@@ -125,12 +128,13 @@ export default function OrdersPage() {
     try {
       setLoading(true);
 
-      const [o, p, t, c] = await Promise.all([
+      const [o, p, t, c, d] = await Promise.all([
         supabase
           .from('ordenes')
           .select(`
             *,
             pacientes(name, cedula, email),
+            doctores(nombre, especialidad),
             orden_pagos(*)
           `)
           .order('created_at', { ascending: false }),
@@ -161,17 +165,25 @@ export default function OrdersPage() {
             email
           `)
           .maybeSingle(),
+
+        supabase
+          .from('doctores')
+          .select('*')
+          .eq('activo', true)
+          .order('nombre'),
       ]);
 
       if (o.error) throw o.error;
       if (p.error) throw p.error;
       if (t.error) throw t.error;
       if (c.error) throw c.error;
+      if (d.error) throw d.error;
 
       setOrders(o.data || []);
       setPatients(p.data || []);
       setTests(t.data || []);
       setLabConfig(c.data || null);
+      setDoctors(d.data || []);
     } catch (error: any) {
       toast.error('Error al cargar datos: ' + error.message);
     } finally {
@@ -365,6 +377,7 @@ export default function OrdersPage() {
         .select(`
           *,
           pacientes(name, cedula, email),
+          doctores(nombre, especialidad),
           orden_pagos(*)
         `)
         .eq('id', orderId)
@@ -422,6 +435,7 @@ export default function OrdersPage() {
             code: orderCode,
             access_key: accessKey,
             patient_id: selectedPatient,
+            doctor_id: selectedDoctor || null,
             total,
             status: 'pending',
             factura_estado: 'PENDIENTE',
@@ -521,6 +535,7 @@ export default function OrdersPage() {
 
       setDialogOpen(false);
       setSelectedPatient('');
+      setSelectedDoctor('');
       setSelectedTests([]);
       setPatientSearch('');
       setTestSearch('');
@@ -586,6 +601,7 @@ export default function OrdersPage() {
           .select(`
             *,
             pacientes(name, cedula, email),
+            doctores(nombre, especialidad),
             orden_pagos(*)
           `)
           .eq('id', orderId)
@@ -608,6 +624,7 @@ export default function OrdersPage() {
       .select(`
         *,
         pacientes(name, cedula, email),
+        doctores(nombre, especialidad),
         orden_pagos(*)
       `)
       .eq('id', orderId)
@@ -628,6 +645,7 @@ export default function OrdersPage() {
       .select(`
         *,
         pacientes(name, cedula, email),
+        doctores(nombre, especialidad),
         orden_pagos(*)
       `)
       .eq('id', orderId)
@@ -691,6 +709,7 @@ export default function OrdersPage() {
         .select(`
           *,
           pacientes(name, cedula, email),
+          doctores(nombre, especialidad),
           orden_pagos(*)
         `)
         .eq('id', paymentOrder.id)
@@ -734,6 +753,7 @@ export default function OrdersPage() {
       .select(`
         *,
         pacientes(*),
+        doctores(nombre, especialidad),
         orden_detalle(
           test_id,
           price,
@@ -788,6 +808,10 @@ export default function OrdersPage() {
     const labSchedule = labConfig?.schedule || '';
     const labRuc = labConfig?.ruc || '';
     const labReg = labConfig?.health_registry || '';
+
+    const doctorHtml = order.doctores?.nombre
+      ? `<div><b>MÉDICO:</b> ${order.doctores.nombre}</div>`
+      : '';
 
     const printWindow = window.open('', '_blank', 'width=320,height=950');
     if (!printWindow) return;
@@ -872,6 +896,7 @@ export default function OrdersPage() {
           <div><b>FECHA:</b> ${new Date(order.created_at).toLocaleDateString()}</div>
           <div><b>PACIENTE:</b> ${order.pacientes?.name || ''}</div>
           <div><b>ID:</b> ${order.pacientes?.cedula || ''}</div>
+          ${doctorHtml}
 
           <div class="line"></div>
 
@@ -958,13 +983,17 @@ export default function OrdersPage() {
     }, 500);
   };
 
-  const filtered = orders.filter(
-    (o) =>
-      o.code?.toLowerCase().includes(search.toLowerCase()) ||
-      o.pacientes?.name?.toLowerCase().includes(search.toLowerCase()) ||
-      o.numero_factura?.toLowerCase().includes(search.toLowerCase()) ||
-      o.clave_acceso_sri?.toLowerCase().includes(search.toLowerCase())
-  );
+  const filtered = orders.filter((o) => {
+    const q = search.toLowerCase();
+
+    return (
+      o.code?.toLowerCase().includes(q) ||
+      o.pacientes?.name?.toLowerCase().includes(q) ||
+      o.doctores?.nombre?.toLowerCase().includes(q) ||
+      o.numero_factura?.toLowerCase().includes(q) ||
+      o.clave_acceso_sri?.toLowerCase().includes(q)
+    );
+  });
 
   if (loading) {
     return (
@@ -988,6 +1017,7 @@ export default function OrdersPage() {
           onClick={() => {
             setSelectedTests([]);
             setSelectedPatient('');
+            setSelectedDoctor('');
             setPatientSearch('');
             setTestSearch('');
             setDialogOpen(true);
@@ -1002,7 +1032,7 @@ export default function OrdersPage() {
         <Search className="absolute left-3 top-3 w-4 h-4 text-muted-foreground" />
         <Input
           className="pl-10"
-          placeholder="Buscar por código, paciente o factura..."
+          placeholder="Buscar por código, paciente, médico o factura..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
@@ -1015,7 +1045,8 @@ export default function OrdersPage() {
               <TableRow>
                 <TableHead>Código</TableHead>
                 <TableHead>Paciente</TableHead>
-                <TableHead className="hidden md:table-cell">Factura</TableHead>                
+                <TableHead className="hidden md:table-cell">Médico</TableHead>
+                <TableHead className="hidden md:table-cell">Factura</TableHead>
                 <TableHead>Total</TableHead>
                 <TableHead className="hidden md:table-cell">Pagado</TableHead>
                 <TableHead className="hidden md:table-cell">Saldo</TableHead>
@@ -1035,7 +1066,19 @@ export default function OrdersPage() {
                 return (
                   <TableRow key={order.id}>
                     <TableCell className="font-bold text-slate-700">{order.code}</TableCell>
+
                     <TableCell className="text-sm">{order.pacientes?.name}</TableCell>
+
+                    <TableCell className="hidden md:table-cell text-sm">
+                      {order.doctores?.nombre ? (
+                        <div className="flex items-center gap-2">
+                          <Stethoscope className="w-3.5 h-3.5 text-slate-400" />
+                          <span>{order.doctores.nombre}</span>
+                        </div>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </TableCell>
 
                     <TableCell className="hidden md:table-cell">
                       {order.numero_factura ? (
@@ -1046,7 +1089,7 @@ export default function OrdersPage() {
                         <Badge variant="secondary">Sin factura</Badge>
                       )}
                     </TableCell>
-                    
+
                     <TableCell className="font-bold text-primary">
                       ${total.toFixed(2)}
                     </TableCell>
@@ -1169,7 +1212,6 @@ export default function OrdersPage() {
                         >
                           <FileCode className="w-4 h-4" />
                         </Button>
-                        
                       </div>
                     </TableCell>
                   </TableRow>
@@ -1283,6 +1325,34 @@ export default function OrdersPage() {
                     )}
                   </div>
                 )}
+              </div>
+
+              <div className="space-y-3">
+                <Label className="text-xs font-bold uppercase tracking-wide text-slate-700">
+                  Médico solicitante (opcional)
+                </Label>
+
+                <Select
+                  value={selectedDoctor || '__none__'}
+                  onValueChange={(value) => setSelectedDoctor(value === '__none__' ? '' : value)}
+                >
+                  <SelectTrigger className="h-12 rounded-xl border-slate-200 bg-white shadow-sm">
+                    <SelectValue placeholder="Seleccione un médico" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">Sin médico</SelectItem>
+                    {doctors.map((doctor) => (
+                      <SelectItem key={doctor.id} value={doctor.id}>
+                        {doctor.nombre}
+                        {doctor.especialidad ? ` — ${doctor.especialidad}` : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+                  Este campo es opcional. Puede registrar la orden sin médico asignado.
+                </div>
               </div>
 
               <div className="space-y-3">
@@ -1542,6 +1612,7 @@ export default function OrdersPage() {
               <div className="rounded-xl border bg-slate-50 p-4 space-y-2 text-sm">
                 <div><b>Orden:</b> {paymentOrder.code}</div>
                 <div><b>Paciente:</b> {paymentOrder.pacientes?.name}</div>
+                <div><b>Médico:</b> {paymentOrder.doctores?.nombre || 'No asignado'}</div>
                 <div><b>Total:</b> ${Number(paymentOrder.total || 0).toFixed(2)}</div>
                 <div><b>Pagado:</b> ${Number(paymentOrder.paid_amount || 0).toFixed(2)}</div>
                 <div>
@@ -1704,6 +1775,13 @@ export default function OrdersPage() {
                 <div>
                   <Label className="text-xs uppercase text-muted-foreground">Paciente</Label>
                   <div className="font-semibold">{selectedOrder.pacientes?.name}</div>
+                </div>
+
+                <div>
+                  <Label className="text-xs uppercase text-muted-foreground">Médico</Label>
+                  <div className="font-semibold">
+                    {selectedOrder.doctores?.nombre || 'No asignado'}
+                  </div>
                 </div>
 
                 <div>
