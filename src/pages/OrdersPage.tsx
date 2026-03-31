@@ -25,6 +25,7 @@ import {
   FileCode,
   RefreshCw,
   UserPlus,
+  Wallet,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import QRCode from 'qrcode';
@@ -65,6 +66,13 @@ type LabConfig = {
   email?: string | null;
 };
 
+type PaymentFormType = {
+  amount: string;
+  payment_method: string;
+  reference: string;
+  notes: string;
+};
+
 export default function OrdersPage() {
   const [orders, setOrders] = useState<any[]>([]);
   const [patients, setPatients] = useState<any[]>([]);
@@ -75,12 +83,17 @@ export default function OrdersPage() {
   const [creating, setCreating] = useState(false);
   const [creatingPatient, setCreatingPatient] = useState(false);
   const [checkingSri, setCheckingSri] = useState<string | null>(null);
+  const [savingPayment, setSavingPayment] = useState(false);
+  const [generatingRide, setGeneratingRide] = useState<string | null>(null);
 
   const [search, setSearch] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [invoiceDialogOpen, setInvoiceDialogOpen] = useState(false);
   const [patientDialogOpen, setPatientDialogOpen] = useState(false);
+  const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
+
   const [selectedOrder, setSelectedOrder] = useState<any>(null);
+  const [paymentOrder, setPaymentOrder] = useState<any>(null);
 
   const [selectedPatient, setSelectedPatient] = useState('');
   const [selectedTests, setSelectedTests] = useState<string[]>([]);
@@ -97,55 +110,73 @@ export default function OrdersPage() {
     direccion: '',
   });
 
+  const [paymentForm, setPaymentForm] = useState<PaymentFormType>({
+    amount: '',
+    payment_method: 'EFECTIVO',
+    reference: '',
+    notes: '',
+  });
+
   useEffect(() => {
     fetchInitialData();
   }, []);
 
   const fetchInitialData = async () => {
-    setLoading(true);
+    try {
+      setLoading(true);
 
-    const [o, p, t, c] = await Promise.all([
-      supabase
-        .from('ordenes')
-        .select(`
-          *,
-          pacientes(name, cedula, email)
-        `)
-        .order('created_at', { ascending: false }),
+      const [o, p, t, c] = await Promise.all([
+        supabase
+          .from('ordenes')
+          .select(`
+            *,
+            pacientes(name, cedula, email),
+            orden_pagos(*)
+          `)
+          .order('created_at', { ascending: false }),
 
-      supabase.from('pacientes').select('*').order('name'),
+        supabase.from('pacientes').select('*').order('name'),
 
-      supabase
-        .from('pruebas')
-        .select(`
-          *,
-          prueba_reactivos(*)
-        `)
-        .order('name'),
+        supabase
+          .from('pruebas')
+          .select(`
+            *,
+            prueba_reactivos(*)
+          `)
+          .order('name'),
 
-      supabase
-        .from('configuracion_laboratorio')
-        .select(`
-          id,
-          logo,
-          name,
-          owner,
-          address,
-          ruc,
-          health_registry,
-          phone,
-          schedule,
-          legal_name,
-          email
-        `)
-        .maybeSingle(),
-    ]);
+        supabase
+          .from('configuracion_laboratorio')
+          .select(`
+            id,
+            logo,
+            name,
+            owner,
+            address,
+            ruc,
+            health_registry,
+            phone,
+            schedule,
+            legal_name,
+            email
+          `)
+          .maybeSingle(),
+      ]);
 
-    setOrders(o.data || []);
-    setPatients(p.data || []);
-    setTests(t.data || []);
-    setLabConfig(c.data || null);
-    setLoading(false);
+      if (o.error) throw o.error;
+      if (p.error) throw p.error;
+      if (t.error) throw t.error;
+      if (c.error) throw c.error;
+
+      setOrders(o.data || []);
+      setPatients(p.data || []);
+      setTests(t.data || []);
+      setLabConfig(c.data || null);
+    } catch (error: any) {
+      toast.error('Error al cargar datos: ' + error.message);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const generateAccessKey = () =>
@@ -283,6 +314,91 @@ export default function OrdersPage() {
     }
   };
 
+  const openRidePdf = async (pdfPath: string) => {
+    if (!pdfPath) {
+      toast.error('No existe PDF RIDE para esta orden');
+      return;
+    }
+
+    const cleanPath = pdfPath.trim().replace(/^\/+/, '');
+
+    const { data } = supabase.storage.from('facturas-pdf').getPublicUrl(cleanPath);
+
+    if (!data?.publicUrl) {
+      toast.error('No se pudo obtener la URL pública del PDF RIDE');
+      return;
+    }
+
+    window.open(data.publicUrl, '_blank', 'noopener,noreferrer');
+  };
+
+  const generarRideDesdeXml = async (
+    orderId: string,
+    silent = false,
+    abrirDespues = true
+  ) => {
+    try {
+      setGeneratingRide(orderId);
+
+      const { data, error } = await supabase.functions.invoke('generar-ride-desde-xml', {
+        body: { order_id: orderId },
+      });
+
+      if (error) {
+        if (!silent) {
+          toast.error('No se pudo generar el PDF RIDE desde el XML');
+        }
+        return false;
+      }
+
+      if (!data?.ok) {
+        if (!silent) {
+          toast.error(data?.message || 'No se pudo generar el PDF RIDE');
+        }
+        return false;
+      }
+
+      await fetchInitialData();
+
+      const { data: updatedOrder, error: updatedOrderError } = await supabase
+        .from('ordenes')
+        .select(`
+          *,
+          pacientes(name, cedula, email),
+          orden_pagos(*)
+        `)
+        .eq('id', orderId)
+        .single();
+
+      if (!updatedOrderError && updatedOrder) {
+        if (selectedOrder?.id === orderId) {
+          setSelectedOrder(updatedOrder);
+        }
+
+        if (paymentOrder?.id === orderId) {
+          setPaymentOrder(updatedOrder);
+        }
+
+        if (abrirDespues && updatedOrder.factura_ride_pdf_path) {
+          await openRidePdf(updatedOrder.factura_ride_pdf_path);
+        }
+      }
+
+      if (!silent) {
+        toast.success(data?.message || 'PDF RIDE generado correctamente');
+      }
+
+      return true;
+    } catch (error: any) {
+      if (!silent) {
+        toast.error('Error al generar RIDE: ' + error.message);
+      }
+      return false;
+    } finally {
+      setGeneratingRide(null);
+    }
+  };
+
   const handleCreate = async () => {
     if (!selectedPatient || selectedTests.length === 0) return;
 
@@ -393,6 +509,14 @@ export default function OrdersPage() {
         }
       } else {
         toast.success('Orden y factura generadas correctamente');
+
+        if (
+          facturaResp?.sri_estado === 'AUTORIZADO' ||
+          facturaResp?.factura_estado === 'AUTORIZADO' ||
+          facturaResp?.autorizado === true
+        ) {
+          await generarRideDesdeXml(order.id, true, false);
+        }
       }
 
       setDialogOpen(false);
@@ -430,6 +554,14 @@ export default function OrdersPage() {
 
       if (data?.ok) {
         toast.success(data?.message || 'Factura autorizada correctamente');
+
+        if (
+          data?.sri_estado === 'AUTORIZADO' ||
+          data?.factura_estado === 'AUTORIZADO' ||
+          data?.autorizado === true
+        ) {
+          await generarRideDesdeXml(orderId, true, false);
+        }
       } else if (data?.sri_estado === 'EN_PROCESAMIENTO') {
         toast.info(data?.message || 'La factura aún sigue en procesamiento en el SRI');
       } else {
@@ -453,7 +585,8 @@ export default function OrdersPage() {
           .from('ordenes')
           .select(`
             *,
-            pacientes(name, cedula, email)
+            pacientes(name, cedula, email),
+            orden_pagos(*)
           `)
           .eq('id', orderId)
           .single();
@@ -474,7 +607,8 @@ export default function OrdersPage() {
       .from('ordenes')
       .select(`
         *,
-        pacientes(name, cedula, email)
+        pacientes(name, cedula, email),
+        orden_pagos(*)
       `)
       .eq('id', orderId)
       .single();
@@ -488,22 +622,92 @@ export default function OrdersPage() {
     setInvoiceDialogOpen(true);
   };
 
-  const openRidePdf = async (pdfPath: string) => {
-    if (!pdfPath) {
-      toast.error('No existe PDF RIDE para esta orden');
+  const openPaymentDialog = async (orderId: string) => {
+    const { data: order, error } = await supabase
+      .from('ordenes')
+      .select(`
+        *,
+        pacientes(name, cedula, email),
+        orden_pagos(*)
+      `)
+      .eq('id', orderId)
+      .single();
+
+    if (error || !order) {
+      toast.error('No se pudo cargar la orden');
       return;
     }
 
-    const cleanPath = pdfPath.trim().replace(/^\/+/, '');
+    setPaymentOrder(order);
+    setPaymentForm({
+      amount: '',
+      payment_method: 'EFECTIVO',
+      reference: '',
+      notes: '',
+    });
+    setPaymentDialogOpen(true);
+  };
 
-    const { data } = supabase.storage.from('facturas-pdf').getPublicUrl(cleanPath);
+  const handleSavePayment = async () => {
+    if (!paymentOrder) return;
 
-    if (!data?.publicUrl) {
-      toast.error('No se pudo obtener la URL pública del PDF RIDE');
+    const amount = round2(Number(paymentForm.amount));
+    const total = safeNumber(paymentOrder.total, 0);
+    const paidAmount = safeNumber(paymentOrder.paid_amount, 0);
+    const saldo = round2(Math.max(total - paidAmount, 0));
+
+    if (!amount || amount <= 0) {
+      toast.error('Ingrese un monto válido');
       return;
     }
 
-    window.open(data.publicUrl, '_blank', 'noopener,noreferrer');
+    if (amount > saldo) {
+      toast.error('El monto no puede ser mayor al saldo pendiente');
+      return;
+    }
+
+    try {
+      setSavingPayment(true);
+
+      const { error } = await supabase.from('orden_pagos').insert([
+        {
+          order_id: paymentOrder.id,
+          amount,
+          payment_method: paymentForm.payment_method,
+          reference: paymentForm.reference.trim() || null,
+          notes: paymentForm.notes.trim() || null,
+        },
+      ]);
+
+      if (error) throw error;
+
+      toast.success('Pago registrado correctamente');
+      setPaymentDialogOpen(false);
+
+      await fetchInitialData();
+
+      const { data: updatedOrder } = await supabase
+        .from('ordenes')
+        .select(`
+          *,
+          pacientes(name, cedula, email),
+          orden_pagos(*)
+        `)
+        .eq('id', paymentOrder.id)
+        .single();
+
+      if (updatedOrder) {
+        setPaymentOrder(updatedOrder);
+
+        if (selectedOrder?.id === updatedOrder.id) {
+          setSelectedOrder(updatedOrder);
+        }
+      }
+    } catch (error: any) {
+      toast.error('Error al registrar pago: ' + error.message);
+    } finally {
+      setSavingPayment(false);
+    }
   };
 
   const openXmlFile = async (xmlPath: string) => {
@@ -558,6 +762,9 @@ export default function OrdersPage() {
         0
       )
     );
+
+    const pagado = round2(safeNumber(order.paid_amount, 0));
+    const saldo = round2(Math.max(total - pagado, 0));
 
     const portalUrl = `${window.location.origin}/portal?clave=${order.access_key}`;
 
@@ -717,6 +924,16 @@ export default function OrdersPage() {
             <span>$${total.toFixed(2)}</span>
           </div>
 
+          <div class="flex">
+            <span>PAGADO:</span>
+            <span>$${pagado.toFixed(2)}</span>
+          </div>
+
+          <div class="flex bold">
+            <span>SALDO:</span>
+            <span>$${saldo.toFixed(2)}</span>
+          </div>
+
           <div class="line"></div>
 
           <div class="center">Consulte sus resultados en:</div>
@@ -763,7 +980,7 @@ export default function OrdersPage() {
         <div>
           <h1 className="text-2xl font-display font-bold">Órdenes de Laboratorio</h1>
           <p className="text-muted-foreground text-sm">
-            Gestión de facturación y tickets térmicos
+            Gestión de facturación, pagos y tickets térmicos
           </p>
         </div>
 
@@ -798,146 +1015,170 @@ export default function OrdersPage() {
               <TableRow>
                 <TableHead>Código</TableHead>
                 <TableHead>Paciente</TableHead>
-                <TableHead className="hidden md:table-cell">Factura</TableHead>
-                <TableHead className="hidden lg:table-cell">Clave SRI</TableHead>
+                <TableHead className="hidden md:table-cell">Factura</TableHead>                
                 <TableHead>Total</TableHead>
+                <TableHead className="hidden md:table-cell">Pagado</TableHead>
+                <TableHead className="hidden md:table-cell">Saldo</TableHead>
                 <TableHead>Estado Orden</TableHead>
+                <TableHead>Estado Pago</TableHead>
                 <TableHead>Estado Factura</TableHead>
                 <TableHead className="text-right">Acciones</TableHead>
               </TableRow>
             </TableHeader>
 
             <TableBody>
-              {filtered.map((order) => (
-                <TableRow key={order.id}>
-                  <TableCell className="font-bold text-slate-700">{order.code}</TableCell>
-                  <TableCell className="text-sm">{order.pacientes?.name}</TableCell>
+              {filtered.map((order) => {
+                const total = safeNumber(order.total, 0);
+                const pagado = safeNumber(order.paid_amount, 0);
+                const saldo = round2(Math.max(total - pagado, 0));
 
-                  <TableCell className="hidden md:table-cell">
-                    {order.numero_factura ? (
-                      <Badge variant="outline" className="font-mono">
-                        {order.numero_factura}
+                return (
+                  <TableRow key={order.id}>
+                    <TableCell className="font-bold text-slate-700">{order.code}</TableCell>
+                    <TableCell className="text-sm">{order.pacientes?.name}</TableCell>
+
+                    <TableCell className="hidden md:table-cell">
+                      {order.numero_factura ? (
+                        <Badge variant="outline" className="font-mono">
+                          {order.numero_factura}
+                        </Badge>
+                      ) : (
+                        <Badge variant="secondary">Sin factura</Badge>
+                      )}
+                    </TableCell>
+                    
+                    <TableCell className="font-bold text-primary">
+                      ${total.toFixed(2)}
+                    </TableCell>
+
+                    <TableCell className="hidden md:table-cell">
+                      ${pagado.toFixed(2)}
+                    </TableCell>
+
+                    <TableCell className="hidden md:table-cell font-medium">
+                      ${saldo.toFixed(2)}
+                    </TableCell>
+
+                    <TableCell>
+                      <Badge variant={order.status === 'completed' ? 'default' : 'secondary'}>
+                        {order.status === 'pending'
+                          ? 'Pendiente'
+                          : order.status === 'in_progress'
+                          ? 'En Proceso'
+                          : 'Finalizado'}
                       </Badge>
-                    ) : (
-                      <Badge variant="secondary">Sin factura</Badge>
-                    )}
-                  </TableCell>
+                    </TableCell>
 
-                  <TableCell className="hidden lg:table-cell max-w-[220px] truncate">
-                    {order.clave_acceso_sri ? (
-                      <span className="text-xs font-mono">{order.clave_acceso_sri}</span>
-                    ) : (
-                      <span className="text-xs text-muted-foreground">—</span>
-                    )}
-                  </TableCell>
+                    <TableCell>
+                      <Badge
+                        variant={
+                          order.payment_status === 'PAGADO'
+                            ? 'default'
+                            : order.payment_status === 'ABONADO'
+                            ? 'outline'
+                            : order.payment_status === 'ANULADO'
+                            ? 'destructive'
+                            : 'secondary'
+                        }
+                      >
+                        {order.payment_status || 'PENDIENTE'}
+                      </Badge>
+                    </TableCell>
 
-                  <TableCell className="font-bold text-primary">
-                    ${Number(order.total).toFixed(2)}
-                  </TableCell>
+                    <TableCell>
+                      <Badge
+                        variant={
+                          order.factura_estado === 'AUTORIZADO'
+                            ? 'default'
+                            : order.factura_estado === 'GENERADA' ||
+                              order.factura_estado === 'EN_PROCESAMIENTO'
+                            ? 'outline'
+                            : order.factura_estado === 'DEVUELTA' ||
+                              order.factura_estado === 'NO AUTORIZADO'
+                            ? 'destructive'
+                            : 'secondary'
+                        }
+                      >
+                        {order.factura_estado === 'EN_PROCESAMIENTO'
+                          ? 'Procesando SRI'
+                          : order.factura_estado || 'PENDIENTE'}
+                      </Badge>
+                    </TableCell>
 
-                  <TableCell>
-                    <Badge variant={order.status === 'completed' ? 'default' : 'secondary'}>
-                      {order.status === 'pending'
-                        ? 'Pendiente'
-                        : order.status === 'in_progress'
-                        ? 'En Proceso'
-                        : 'Finalizado'}
-                    </Badge>
-                  </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-2">
+                        {order.factura_estado === 'EN_PROCESAMIENTO' && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            onClick={() => recheckSriStatus(order.id)}
+                            title="Reconsultar SRI"
+                            disabled={checkingSri === order.id}
+                          >
+                            {checkingSri === order.id ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <RefreshCw className="w-4 h-4" />
+                            )}
+                          </Button>
+                        )}
 
-                  <TableCell>
-                    <Badge
-                      variant={
-                        order.factura_estado === 'AUTORIZADO'
-                          ? 'default'
-                          : order.factura_estado === 'GENERADA' ||
-                            order.factura_estado === 'EN_PROCESAMIENTO'
-                          ? 'outline'
-                          : order.factura_estado === 'DEVUELTA' ||
-                            order.factura_estado === 'NO AUTORIZADO'
-                          ? 'destructive'
-                          : 'secondary'
-                      }
-                    >
-                      {order.factura_estado === 'EN_PROCESAMIENTO'
-                        ? 'Procesando SRI'
-                        : order.factura_estado || 'PENDIENTE'}
-                    </Badge>
-                  </TableCell>
-
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-2">
-                      {order.factura_estado === 'EN_PROCESAMIENTO' && (
                         <Button
                           variant="ghost"
                           size="icon"
-                          onClick={() => recheckSriStatus(order.id)}
-                          title="Reconsultar SRI"
-                          disabled={checkingSri === order.id}
+                          onClick={() => openPaymentDialog(order.id)}
+                          title="Registrar pago"
                         >
-                          {checkingSri === order.id ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <RefreshCw className="w-4 h-4" />
-                          )}
+                          <Wallet className="w-4 h-4" />
                         </Button>
-                      )}
 
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => printThermalTicket(order.id)}
-                        title="Reimprimir Ticket"
-                      >
-                        <Printer className="w-4 h-4" />
-                      </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => printThermalTicket(order.id)}
+                          title="Reimprimir Ticket"
+                        >
+                          <Printer className="w-4 h-4" />
+                        </Button>
 
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => openInvoiceDialog(order.id)}
-                        title="Ver Factura"
-                      >
-                        <FileText className="w-4 h-4" />
-                      </Button>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() => openInvoiceDialog(order.id)}
+                          title="Ver Factura"
+                        >
+                          <FileText className="w-4 h-4" />
+                        </Button>
 
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() =>
-                          openXmlFile(
-                            order.factura_xml_autorizado_path ||
-                              order.factura_xml_firmado_path ||
-                              order.factura_xml_path
-                          )
-                        }
-                        title="Abrir XML"
-                        disabled={
-                          !order.factura_xml_autorizado_path &&
-                          !order.factura_xml_firmado_path &&
-                          !order.factura_xml_path
-                        }
-                      >
-                        <FileCode className="w-4 h-4" />
-                      </Button>
-
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => openRidePdf(order.factura_ride_pdf_path)}
-                        title="Abrir PDF RIDE"
-                        disabled={!order.factura_ride_pdf_path}
-                      >
-                        <Receipt className="w-4 h-4" />
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
-              ))}
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          onClick={() =>
+                            openXmlFile(
+                              order.factura_xml_autorizado_path ||
+                                order.factura_xml_firmado_path ||
+                                order.factura_xml_path
+                            )
+                          }
+                          title="Abrir XML"
+                          disabled={
+                            !order.factura_xml_autorizado_path &&
+                            !order.factura_xml_firmado_path &&
+                            !order.factura_xml_path
+                          }
+                        >
+                          <FileCode className="w-4 h-4" />
+                        </Button>
+                        
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
 
               {filtered.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={8} className="text-center py-10 text-muted-foreground">
+                  <TableCell colSpan={11} className="text-center py-10 text-muted-foreground">
                     No se encontraron órdenes
                   </TableCell>
                 </TableRow>
@@ -1290,6 +1531,155 @@ export default function OrdersPage() {
         </DialogContent>
       </Dialog>
 
+      <Dialog open={paymentDialogOpen} onOpenChange={setPaymentDialogOpen}>
+        <DialogContent className="sm:max-w-[620px] max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl">Registrar Pago</DialogTitle>
+          </DialogHeader>
+
+          {paymentOrder && (
+            <div className="space-y-4 pt-2">
+              <div className="rounded-xl border bg-slate-50 p-4 space-y-2 text-sm">
+                <div><b>Orden:</b> {paymentOrder.code}</div>
+                <div><b>Paciente:</b> {paymentOrder.pacientes?.name}</div>
+                <div><b>Total:</b> ${Number(paymentOrder.total || 0).toFixed(2)}</div>
+                <div><b>Pagado:</b> ${Number(paymentOrder.paid_amount || 0).toFixed(2)}</div>
+                <div>
+                  <b>Saldo:</b> $
+                  {(
+                    Number(paymentOrder.total || 0) - Number(paymentOrder.paid_amount || 0)
+                  ).toFixed(2)}
+                </div>
+                <div>
+                  <b>Estado de pago:</b> {paymentOrder.payment_status || 'PENDIENTE'}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label className="font-semibold text-xs uppercase tracking-wider">Monto *</Label>
+                <Input
+                  type="number"
+                  step="0.01"
+                  min="0.01"
+                  value={paymentForm.amount}
+                  onChange={(e) =>
+                    setPaymentForm((f) => ({ ...f, amount: e.target.value }))
+                  }
+                  placeholder="0.00"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label className="font-semibold text-xs uppercase tracking-wider">
+                  Método de Pago *
+                </Label>
+                <Select
+                  value={paymentForm.payment_method}
+                  onValueChange={(v) =>
+                    setPaymentForm((f) => ({ ...f, payment_method: v }))
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="EFECTIVO">Efectivo</SelectItem>
+                    <SelectItem value="TRANSFERENCIA">Transferencia</SelectItem>
+                    <SelectItem value="TARJETA">Tarjeta</SelectItem>
+                    <SelectItem value="DEPOSITO">Depósito</SelectItem>
+                    <SelectItem value="OTRO">Otro</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label className="font-semibold text-xs uppercase tracking-wider">
+                  Referencia
+                </Label>
+                <Input
+                  value={paymentForm.reference}
+                  onChange={(e) =>
+                    setPaymentForm((f) => ({ ...f, reference: e.target.value }))
+                  }
+                  placeholder="Número de transferencia, voucher, etc."
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label className="font-semibold text-xs uppercase tracking-wider">
+                  Observación
+                </Label>
+                <Textarea
+                  rows={3}
+                  value={paymentForm.notes}
+                  onChange={(e) =>
+                    setPaymentForm((f) => ({ ...f, notes: e.target.value }))
+                  }
+                  placeholder="Comentario opcional"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label className="font-semibold text-xs uppercase tracking-wider">
+                  Historial de Pagos
+                </Label>
+
+                <div className="rounded-xl border divide-y">
+                  {(paymentOrder.orden_pagos || []).length > 0 ? (
+                    [...paymentOrder.orden_pagos]
+                      .sort(
+                        (a: any, b: any) =>
+                          new Date(b.paid_at || b.created_at).getTime() -
+                          new Date(a.paid_at || a.created_at).getTime()
+                      )
+                      .map((p: any) => (
+                        <div key={p.id} className="p-3 text-sm">
+                          <div className="flex items-center justify-between gap-3">
+                            <div>
+                              <div className="font-semibold">{p.payment_method}</div>
+                              <div className="text-xs text-muted-foreground">
+                                {new Date(p.paid_at || p.created_at).toLocaleString()}
+                              </div>
+                              {p.reference && (
+                                <div className="text-xs text-muted-foreground">
+                                  Ref: {p.reference}
+                                </div>
+                              )}
+                            </div>
+                            <div className="font-bold text-primary">
+                              ${Number(p.amount || 0).toFixed(2)}
+                            </div>
+                          </div>
+                          {p.notes && <div className="mt-1 text-xs">{p.notes}</div>}
+                        </div>
+                      ))
+                  ) : (
+                    <div className="p-4 text-sm text-muted-foreground text-center">
+                      Aún no existen pagos registrados
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <Button
+                onClick={handleSavePayment}
+                className="w-full gradient-clinical text-primary-foreground border-0 h-11"
+                disabled={savingPayment}
+              >
+                {savingPayment ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Guardando...
+                  </>
+                ) : (
+                  'Registrar Pago'
+                )}
+              </Button>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={invoiceDialogOpen} onOpenChange={setInvoiceDialogOpen}>
         <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
           <DialogHeader>
@@ -1330,6 +1720,37 @@ export default function OrdersPage() {
                   </div>
                 </div>
 
+                <div>
+                  <Label className="text-xs uppercase text-muted-foreground">Estado de pago</Label>
+                  <div className="font-semibold">
+                    {selectedOrder.payment_status || 'PENDIENTE'}
+                  </div>
+                </div>
+
+                <div>
+                  <Label className="text-xs uppercase text-muted-foreground">Pagado</Label>
+                  <div className="font-semibold">
+                    ${Number(selectedOrder.paid_amount || 0).toFixed(2)}
+                  </div>
+                </div>
+
+                <div>
+                  <Label className="text-xs uppercase text-muted-foreground">Saldo pendiente</Label>
+                  <div className="font-semibold">
+                    ${(
+                      Number(selectedOrder.total || 0) -
+                      Number(selectedOrder.paid_amount || 0)
+                    ).toFixed(2)}
+                  </div>
+                </div>
+
+                <div>
+                  <Label className="text-xs uppercase text-muted-foreground">Total</Label>
+                  <div className="font-semibold">
+                    ${Number(selectedOrder.total || 0).toFixed(2)}
+                  </div>
+                </div>
+
                 <div className="md:col-span-2">
                   <Label className="text-xs uppercase text-muted-foreground">
                     Clave de acceso SRI
@@ -1357,13 +1778,6 @@ export default function OrdersPage() {
                   </div>
                 </div>
 
-                <div>
-                  <Label className="text-xs uppercase text-muted-foreground">Total</Label>
-                  <div className="font-semibold">
-                    ${Number(selectedOrder.total || 0).toFixed(2)}
-                  </div>
-                </div>
-
                 <div className="md:col-span-2">
                   <Label className="text-xs uppercase text-muted-foreground">Mensaje</Label>
                   <div>{selectedOrder.factura_mensaje || '—'}</div>
@@ -1384,6 +1798,45 @@ export default function OrdersPage() {
                   <div className="break-all">{selectedOrder.factura_ride_pdf_path || '—'}</div>
                 </div>
 
+                <div className="md:col-span-2">
+                  <Label className="text-xs uppercase text-muted-foreground">Pagos registrados</Label>
+                  <div className="rounded-xl border divide-y mt-2">
+                    {(selectedOrder.orden_pagos || []).length > 0 ? (
+                      [...selectedOrder.orden_pagos]
+                        .sort(
+                          (a: any, b: any) =>
+                            new Date(b.paid_at || b.created_at).getTime() -
+                            new Date(a.paid_at || a.created_at).getTime()
+                        )
+                        .map((p: any) => (
+                          <div key={p.id} className="p-3 text-sm">
+                            <div className="flex items-center justify-between gap-3">
+                              <div>
+                                <div className="font-semibold">{p.payment_method}</div>
+                                <div className="text-xs text-muted-foreground">
+                                  {new Date(p.paid_at || p.created_at).toLocaleString()}
+                                </div>
+                                {p.reference && (
+                                  <div className="text-xs text-muted-foreground">
+                                    Ref: {p.reference}
+                                  </div>
+                                )}
+                              </div>
+                              <div className="font-bold text-primary">
+                                ${Number(p.amount || 0).toFixed(2)}
+                              </div>
+                            </div>
+                            {p.notes && <div className="mt-1 text-xs">{p.notes}</div>}
+                          </div>
+                        ))
+                    ) : (
+                      <div className="p-4 text-sm text-muted-foreground">
+                        No hay pagos registrados.
+                      </div>
+                    )}
+                  </div>
+                </div>
+
                 <div className="md:col-span-2 flex flex-wrap gap-2 pt-2">
                   {selectedOrder.factura_estado === 'EN_PROCESAMIENTO' && (
                     <Button
@@ -1399,6 +1852,14 @@ export default function OrdersPage() {
                       Reconsultar SRI
                     </Button>
                   )}
+
+                  <Button
+                    variant="outline"
+                    onClick={() => openPaymentDialog(selectedOrder.id)}
+                  >
+                    <Wallet className="w-4 h-4 mr-2" />
+                    Registrar Pago
+                  </Button>
 
                   <Button
                     variant="outline"
@@ -1421,11 +1882,15 @@ export default function OrdersPage() {
 
                   <Button
                     variant="outline"
-                    onClick={() => openRidePdf(selectedOrder.factura_ride_pdf_path)}
-                    disabled={!selectedOrder.factura_ride_pdf_path}
+                    onClick={() => generarRideDesdeXml(selectedOrder.id, false, true)}
+                    disabled={generatingRide === selectedOrder.id}
                   >
-                    <Receipt className="w-4 h-4 mr-2" />
-                    Abrir PDF RIDE
+                    {generatingRide === selectedOrder.id ? (
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    ) : (
+                      <Receipt className="w-4 h-4 mr-2" />
+                    )}
+                    Generar PDF RIDE
                   </Button>
 
                   <Button variant="outline" onClick={() => printThermalTicket(selectedOrder.id)}>

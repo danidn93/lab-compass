@@ -414,6 +414,47 @@ export type Database = {
           },
         ]
       }
+      orden_pagos: {
+        Row: {
+          amount: number
+          created_at: string | null
+          id: string
+          notes: string | null
+          order_id: string
+          paid_at: string
+          payment_method: string
+          reference: string | null
+        }
+        Insert: {
+          amount: number
+          created_at?: string | null
+          id?: string
+          notes?: string | null
+          order_id: string
+          paid_at?: string
+          payment_method: string
+          reference?: string | null
+        }
+        Update: {
+          amount?: number
+          created_at?: string | null
+          id?: string
+          notes?: string | null
+          order_id?: string
+          paid_at?: string
+          payment_method?: string
+          reference?: string | null
+        }
+        Relationships: [
+          {
+            foreignKeyName: "orden_pagos_order_id_fkey"
+            columns: ["order_id"]
+            isOneToOne: false
+            referencedRelation: "ordenes"
+            referencedColumns: ["id"]
+          },
+        ]
+      }
       ordenes: {
         Row: {
           access_key: string
@@ -432,7 +473,9 @@ export type Database = {
           id: string
           numero_autorizacion_sri: string | null
           numero_factura: string | null
+          paid_amount: number
           patient_id: string
+          payment_status: string
           status: string
           total: number
         }
@@ -453,7 +496,9 @@ export type Database = {
           id?: string
           numero_autorizacion_sri?: string | null
           numero_factura?: string | null
+          paid_amount?: number
           patient_id: string
+          payment_status?: string
           status?: string
           total?: number
         }
@@ -474,7 +519,9 @@ export type Database = {
           id?: string
           numero_autorizacion_sri?: string | null
           numero_factura?: string | null
+          paid_amount?: number
           patient_id?: string
+          payment_status?: string
           status?: string
           total?: number
         }
@@ -533,22 +580,37 @@ export type Database = {
       }
       parametros_prueba: {
         Row: {
+          allow_observation: boolean
+          bool_false_label: string | null
+          bool_true_label: string | null
           id: string
           name: string
+          result_type: string
+          sort_order: number
           test_id: string
-          unit: string
+          unit: string | null
         }
         Insert: {
+          allow_observation?: boolean
+          bool_false_label?: string | null
+          bool_true_label?: string | null
           id?: string
           name: string
+          result_type?: string
+          sort_order?: number
           test_id: string
-          unit: string
+          unit?: string | null
         }
         Update: {
+          allow_observation?: boolean
+          bool_false_label?: string | null
+          bool_true_label?: string | null
           id?: string
           name?: string
+          result_type?: string
+          sort_order?: number
           test_id?: string
-          unit?: string
+          unit?: string | null
         }
         Relationships: [
           {
@@ -705,28 +767,40 @@ export type Database = {
           applied_range_max: number | null
           applied_range_min: number | null
           id: string
+          observation: string | null
           parameter_id: string
           result_id: string
-          status: string
-          value: number
+          status: string | null
+          value: number | null
+          value_boolean: boolean | null
+          value_numeric: number | null
+          value_text: string | null
         }
         Insert: {
           applied_range_max?: number | null
           applied_range_min?: number | null
           id?: string
+          observation?: string | null
           parameter_id: string
           result_id: string
-          status: string
-          value: number
+          status?: string | null
+          value?: number | null
+          value_boolean?: boolean | null
+          value_numeric?: number | null
+          value_text?: string | null
         }
         Update: {
           applied_range_max?: number | null
           applied_range_min?: number | null
           id?: string
+          observation?: string | null
           parameter_id?: string
           result_id?: string
-          status?: string
-          value?: number
+          status?: string | null
+          value?: number | null
+          value_boolean?: boolean | null
+          value_numeric?: number | null
+          value_text?: string | null
         }
         Relationships: [
           {
@@ -910,6 +984,10 @@ export type Database = {
           two_factor_secret: string
           username: string
         }[]
+      }
+      recalcular_pago_orden: {
+        Args: { p_order_id: string }
+        Returns: undefined
       }
     }
     Enums: {

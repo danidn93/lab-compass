@@ -53,6 +53,15 @@ function emptyEntryValue(): EntryValueItem {
   };
 }
 
+function safeNumber(value: any, fallback = 0): number {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : fallback;
+}
+
+function round2(value: number): number {
+  return Number(value.toFixed(2));
+}
+
 export default function ResultsPage() {
   const [orders, setOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -110,6 +119,18 @@ export default function ResultsPage() {
     const cedula = normalizeText(order.pacientes?.cedula);
 
     return patientName.includes(q) || code.includes(q) || cedula.includes(q);
+  };
+
+  const isOrderPaid = (order: any) => {
+    const total = round2(safeNumber(order?.total, 0));
+    const paid = round2(safeNumber(order?.paid_amount, 0));
+    return paid >= total && total > 0;
+  };
+
+  const getPendingBalance = (order: any) => {
+    const total = round2(safeNumber(order?.total, 0));
+    const paid = round2(safeNumber(order?.paid_amount, 0));
+    return round2(Math.max(total - paid, 0));
   };
 
   const openEntry = async (order: any) => {
@@ -461,6 +482,16 @@ export default function ResultsPage() {
       if (!orderData) throw new Error('No se encontró la orden');
       if (!orderData.resultados?.length) throw new Error('La orden no tiene resultados registrados');
 
+      const total = round2(safeNumber(orderData.total, 0));
+      const paid = round2(safeNumber(orderData.paid_amount, 0));
+      const saldo = round2(Math.max(total - paid, 0));
+
+      if (paid < total) {
+        throw new Error(
+          `No se puede generar el PDF porque la orden aún no está pagada en su totalidad. Saldo pendiente: $${saldo.toFixed(2)}`
+        );
+      }
+
       const pdfConfig: PdfLabConfig = {
         name: configData.name || 'LABORATORIO CLÍNICO',
         owner: configData.owner || '',
@@ -600,6 +631,19 @@ export default function ResultsPage() {
                     <p className="text-xs text-muted-foreground">
                       Recibido: {new Date(order.created_at).toLocaleDateString()}
                     </p>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <Badge variant="outline">
+                        Total: ${safeNumber(order.total, 0).toFixed(2)}
+                      </Badge>
+                      <Badge variant="outline">
+                        Pagado: ${safeNumber(order.paid_amount, 0).toFixed(2)}
+                      </Badge>
+                      <Badge
+                        variant={isOrderPaid(order) ? 'default' : 'secondary'}
+                      >
+                        {order.payment_status || 'PENDIENTE'}
+                      </Badge>
+                    </div>
                   </div>
                   <Button
                     size="sm"
@@ -652,47 +696,80 @@ export default function ResultsPage() {
                   <TableHead>Orden</TableHead>
                   <TableHead>Paciente</TableHead>
                   <TableHead className="hidden md:table-cell">Fecha Emisión</TableHead>
+                  <TableHead className="hidden md:table-cell">Pago</TableHead>
+                  <TableHead className="hidden md:table-cell">Saldo</TableHead>
                   <TableHead>Estado</TableHead>
                   <TableHead className="text-right">Reporte</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {completedOrders.map(order => (
-                  <TableRow key={order.id}>
-                    <TableCell className="font-mono font-bold text-slate-600">
-                      {order.code}
-                    </TableCell>
-                    <TableCell className="text-sm">{order.pacientes?.name}</TableCell>
-                    <TableCell className="hidden md:table-cell text-xs">
-                      {new Date(order.created_at).toLocaleDateString()}
-                    </TableCell>
-                    <TableCell>
-                      <Badge className="bg-emerald-50 text-emerald-700 border-emerald-100 flex w-fit items-center gap-1">
-                        <CheckCircle2 className="w-3 h-3" /> Validado
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="text-blue-600"
-                        onClick={() => handleDownloadResultPdf(order.id)}
-                        disabled={downloadingOrderId === order.id}
-                        title="Descargar PDF"
-                      >
-                        {downloadingOrderId === order.id ? (
-                          <Loader2 className="w-4 h-4 animate-spin" />
-                        ) : (
-                          <Download className="w-4 h-4" />
-                        )}
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {completedOrders.map(order => {
+                  const paid = isOrderPaid(order);
+                  const saldo = getPendingBalance(order);
+
+                  return (
+                    <TableRow key={order.id}>
+                      <TableCell className="font-mono font-bold text-slate-600">
+                        {order.code}
+                      </TableCell>
+
+                      <TableCell className="text-sm">{order.pacientes?.name}</TableCell>
+
+                      <TableCell className="hidden md:table-cell text-xs">
+                        {new Date(order.created_at).toLocaleDateString()}
+                      </TableCell>
+
+                      <TableCell className="hidden md:table-cell">
+                        <Badge variant={paid ? 'default' : 'secondary'}>
+                          {order.payment_status || (paid ? 'PAGADO' : 'PENDIENTE')}
+                        </Badge>
+                      </TableCell>
+
+                      <TableCell className="hidden md:table-cell text-sm font-medium">
+                        ${saldo.toFixed(2)}
+                      </TableCell>
+
+                      <TableCell>
+                        <Badge className="bg-emerald-50 text-emerald-700 border-emerald-100 flex w-fit items-center gap-1">
+                          <CheckCircle2 className="w-3 h-3" /> Validado
+                        </Badge>
+                      </TableCell>
+
+                      <TableCell className="text-right">
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className={paid ? 'text-blue-600' : 'text-slate-400'}
+                          onClick={() => {
+                            if (!paid) {
+                              toast.error(
+                                `No se puede generar el PDF porque la orden aún tiene un saldo pendiente de $${saldo.toFixed(2)}`
+                              );
+                              return;
+                            }
+                            handleDownloadResultPdf(order.id);
+                          }}
+                          disabled={downloadingOrderId === order.id || !paid}
+                          title={
+                            paid
+                              ? 'Descargar PDF'
+                              : `Pago incompleto. Saldo pendiente: $${saldo.toFixed(2)}`
+                          }
+                        >
+                          {downloadingOrderId === order.id ? (
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                          ) : (
+                            <Download className="w-4 h-4" />
+                          )}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
 
                 {completedOrders.length === 0 && (
                   <TableRow>
-                    <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
+                    <TableCell colSpan={7} className="text-center py-8 text-muted-foreground">
                       No hay resultados que coincidan con la búsqueda
                     </TableCell>
                   </TableRow>
@@ -722,6 +799,9 @@ export default function ResultsPage() {
                 <span>Paciente: {orderDetails.pacientes.name}</span>
                 <span>Edad: {calcAge(orderDetails.pacientes.birth_date)} años</span>
                 <span>Sexo: {orderDetails.pacientes.sex}</span>
+                <span>Total: ${safeNumber(orderDetails.total, 0).toFixed(2)}</span>
+                <span>Pagado: ${safeNumber(orderDetails.paid_amount, 0).toFixed(2)}</span>
+                <span>Saldo: ${getPendingBalance(orderDetails).toFixed(2)}</span>
               </div>
             )}
           </DialogHeader>
