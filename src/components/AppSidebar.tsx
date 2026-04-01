@@ -110,8 +110,8 @@ export function AppSidebar() {
   };
 
   const isActive = (path: string) => {
-    if (path === '/admin') return location.pathname === '/admin';
-    return location.pathname.startsWith(path);
+    if (location.pathname === path) return true;
+    return location.pathname.startsWith(path + '/');
   };
 
   const filteredNavItems = navItems.filter((item) => {
