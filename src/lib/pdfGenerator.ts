@@ -480,36 +480,33 @@ function drawSignatureBlock(doc: jsPDF, config: PdfLabConfig) {
   const sello = normalizeImageData(config.sello);
   const selloFormat = imageFormatFromBase64(sello);
 
+  // Sello en color original
+  const selloW = 29;
+  const selloH = 29;
+  const selloX = 145;
+  const selloY = 232;
+
+  // Firma en tamaño natural, solo más abajo y un poco a la izquierda
+  const firmaW = 40;
+  const firmaH = 14;
+  const firmaX = 139;
+  const firmaY = 232;
+
   if (sello && selloFormat) {
     try {
-      doc.saveGraphicsState();
-      (doc as any).setGState?.(new (doc as any).GState({ opacity: 0.22 }));
-      doc.addImage(sello, selloFormat, 140, 233, 28, 28);
-      doc.restoreGraphicsState();
-    } catch {
-      try {
-        doc.addImage(sello, selloFormat, 140, 233, 28, 28);
-      } catch {
-        // ignorar
-      }
-    }
-  }
-
-  if (firma && firmaFormat) {
-    try {
-      doc.addImage(firma, firmaFormat, 145, 230, 35, 15);
+      doc.addImage(sello, selloFormat, selloX, selloY, selloW, selloH);
     } catch {
       // ignorar
     }
   }
 
-  doc.setTextColor(55, 55, 55);
-  doc.setFont("times", "bold");
-  doc.setFontSize(10);
-  doc.text(safeText(config.owner), 159, 253, { align: "center" });
-
-  doc.setFont("times", "normal");
-  doc.text("Laboratorista Clínico", 159, 259, { align: "center" });
+  if (firma && firmaFormat) {
+    try {
+      doc.addImage(firma, firmaFormat, firmaX, firmaY, firmaW, firmaH);
+    } catch {
+      // ignorar
+    }
+  }
 }
 
 function buildPrintableExamTitle(testName: string) {
