@@ -18,6 +18,15 @@ type LabConfig = {
   logo: string | null;
 };
 
+type AuthUser = {
+  id: string;
+  username: string;
+  role: string;
+  name: string;
+  two_factor_enabled?: boolean;
+  two_factor_secret?: string | null;
+};
+
 export default function LoginPage() {
   const { login } = useAuth();
   const navigate = useNavigate();
@@ -33,7 +42,7 @@ export default function LoginPage() {
   const [otpCode, setOtpCode] = useState('');
   const [qrCodeUrl, setQrCodeUrl] = useState('');
   const [isFirstTime, setIsFirstTime] = useState(false);
-  const [tempUser, setTempUser] = useState<any>(null);
+  const [tempUser, setTempUser] = useState<AuthUser | null>(null);
 
   useEffect(() => {
     const fetchLabConfig = async () => {
@@ -62,7 +71,93 @@ export default function LoginPage() {
     fetchLabConfig();
   }, []);
 
-  const completeLogin = (user: any) => {
+  const getBrowserName = (ua: string) => {
+    if (/Edg/i.test(ua)) return 'Microsoft Edge';
+    if (/OPR|Opera/i.test(ua)) return 'Opera';
+    if (/Chrome/i.test(ua) && !/Edg/i.test(ua)) return 'Chrome';
+    if (/Safari/i.test(ua) && !/Chrome/i.test(ua)) return 'Safari';
+    if (/Firefox/i.test(ua)) return 'Firefox';
+    if (/MSIE|Trident/i.test(ua)) return 'Internet Explorer';
+    return 'Desconocido';
+  };
+
+  const getOSName = (ua: string) => {
+    if (/Windows NT/i.test(ua)) return 'Windows';
+    if (/Mac OS X/i.test(ua)) return 'macOS';
+    if (/Android/i.test(ua)) return 'Android';
+    if (/iPhone|iPad|iPod/i.test(ua)) return 'iOS';
+    if (/Linux/i.test(ua)) return 'Linux';
+    return 'Desconocido';
+  };
+
+  const getDeviceType = (ua: string) => {
+    if (/iPad|Tablet/i.test(ua)) return 'Tablet';
+    if (/Mobi|Android|iPhone|iPod/i.test(ua)) return 'Móvil';
+    return 'Escritorio';
+  };
+
+  const getDeviceName = () => {
+    const ua = navigator.userAgent;
+    const browser = getBrowserName(ua);
+    const os = getOSName(ua);
+    const deviceType = getDeviceType(ua);
+
+    return `${deviceType} - ${os} - ${browser}`;
+  };
+
+  const getPublicIp = async (): Promise<string | null> => {
+    try {
+      const response = await fetch('https://api.ipify.org?format=json');
+      if (!response.ok) return null;
+
+      const data = await response.json();
+      return data?.ip || null;
+    } catch (error) {
+      console.error('No se pudo obtener la IP pública:', error);
+      return null;
+    }
+  };
+
+  const registrarLogAcceso = async (
+    usuarioId: string | null,
+    evento: string,
+    extraDetalles?: Record<string, any>
+  ) => {
+    try {
+      const userAgent = navigator.userAgent || null;
+      const ip = await getPublicIp();
+      const nombreDispositivo = getDeviceName();
+
+      const detalles = {
+        nombre_dispositivo: nombreDispositivo,
+        navegador: getBrowserName(userAgent || ''),
+        sistema_operativo: getOSName(userAgent || ''),
+        tipo_dispositivo: getDeviceType(userAgent || ''),
+        ...extraDetalles,
+      };
+
+      const { error } = await supabase.from('logs_acceso').insert({
+        usuario_id: usuarioId,
+        evento,
+        ip_address: ip,
+        user_agent: userAgent,
+        detalles,
+      });
+
+      if (error) {
+        console.error('Error registrando log de acceso:', error);
+      }
+    } catch (err) {
+      console.error('Error inesperado registrando log de acceso:', err);
+    }
+  };
+
+  const completeLogin = async (user: AuthUser) => {
+    await registrarLogAcceso(user.id, 'LOGIN_EXITOSO', {
+      username: user.username,
+      metodo_autenticacion: user.two_factor_enabled ? 'PASSWORD + OTP' : 'PASSWORD',
+    });
+
     login({
       id: user.id,
       username: user.username,
@@ -93,12 +188,17 @@ export default function LoginPage() {
           algorithm: 'SHA1',
           digits: 6,
           period: 30,
-          secret: tempUser.two_factor_secret,
+          secret: tempUser.two_factor_secret || '',
         });
 
         const delta = totp.validate({ token: otpCode, window: 1 });
 
         if (delta === null) {
+          await registrarLogAcceso(tempUser.id, 'OTP_FALLIDO', {
+            username: tempUser.username,
+            motivo: 'Código incorrecto o expirado',
+          });
+
           setErrorMsg('Código incorrecto o expirado');
           toast.error('Validación fallida');
           setLoading(false);
@@ -117,9 +217,17 @@ export default function LoginPage() {
           if (updateError) {
             throw new Error('Error al activar 2FA');
           }
+
+          await registrarLogAcceso(tempUser.id, '2FA_ACTIVADO', {
+            username: tempUser.username,
+          });
         }
 
-        completeLogin(tempUser);
+        await completeLogin({
+          ...tempUser,
+          two_factor_enabled: true,
+        });
+
         return;
       }
 
@@ -129,12 +237,21 @@ export default function LoginPage() {
       });
 
       if (error || !data || data.length === 0) {
+        await registrarLogAcceso(null, 'LOGIN_FALLIDO', {
+          username,
+          motivo: 'Credenciales incorrectas',
+        });
+
         setErrorMsg('Credenciales incorrectas');
         setLoading(false);
         return;
       }
 
-      const user = data[0];
+      const user: AuthUser = data[0];
+
+      await registrarLogAcceso(user.id, 'LOGIN_PASSWORD_OK', {
+        username: user.username,
+      });
 
       if (!user.two_factor_enabled) {
         const secret = new OTPAuth.Secret();
@@ -158,20 +275,40 @@ export default function LoginPage() {
         setQrCodeUrl(qrUrl);
         setIsFirstTime(true);
         setShowOtp(true);
+
+        await registrarLogAcceso(user.id, '2FA_CONFIGURACION_INICIADA', {
+          username: user.username,
+        });
       } else {
         setTempUser(user);
         setIsFirstTime(false);
         setShowOtp(true);
+
+        await registrarLogAcceso(user.id, 'OTP_SOLICITADO', {
+          username: user.username,
+        });
       }
     } catch (err) {
       console.error(err);
+
+      await registrarLogAcceso(tempUser?.id || null, 'ERROR_AUTENTICACION', {
+        username: tempUser?.username || username || null,
+        mensaje: err instanceof Error ? err.message : 'Error desconocido',
+      });
+
       setErrorMsg('Error en el sistema de autenticación');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleUseAnotherAccount = () => {
+  const handleUseAnotherAccount = async () => {
+    if (tempUser) {
+      await registrarLogAcceso(tempUser.id, 'CAMBIO_DE_CUENTA_EN_OTP', {
+        username: tempUser.username,
+      });
+    }
+
     setShowOtp(false);
     setOtpCode('');
     setQrCodeUrl('');

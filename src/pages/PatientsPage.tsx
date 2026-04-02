@@ -1,31 +1,62 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabaseClient';
+import { useAuth } from '@/contexts/AuthContext';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Plus, Search, Edit, Trash2, Loader2 } from 'lucide-react';
+import { Plus, Search, Edit, Trash2, Loader2, ShieldCheck } from 'lucide-react';
 import { toast } from 'sonner';
 import { Badge } from '@/components/ui/badge';
 import { Textarea } from '@/components/ui/textarea';
+import * as OTPAuth from 'otpauth';
+
+type PatientForm = {
+  name: string;
+  cedula: string;
+  phone: string;
+  email: string;
+  birth_date: string;
+  sex: 'M' | 'F';
+  direccion: string;
+};
+
+type AuthUser = {
+  id: string;
+  username: string;
+  name?: string;
+  role?: string;
+};
 
 export default function PatientsPage() {
+  const { user } = useAuth() as { user: AuthUser | null };
+
   const [patients, setPatients] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  const [form, setForm] = useState({
+  const [otpDialogOpen, setOtpDialogOpen] = useState(false);
+  const [otpCode, setOtpCode] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const [form, setForm] = useState<PatientForm>({
     name: '',
     cedula: '',
     phone: '',
     email: '',
     birth_date: '',
-    sex: 'M' as 'M' | 'F',
+    sex: 'M',
     direccion: '',
   });
 
@@ -87,40 +118,219 @@ export default function PatientsPage() {
     setDialogOpen(true);
   };
 
-  const handleSave = async () => {
+  const getBrowserName = (ua: string) => {
+    if (/Edg/i.test(ua)) return 'Microsoft Edge';
+    if (/OPR|Opera/i.test(ua)) return 'Opera';
+    if (/Chrome/i.test(ua) && !/Edg/i.test(ua)) return 'Chrome';
+    if (/Safari/i.test(ua) && !/Chrome/i.test(ua)) return 'Safari';
+    if (/Firefox/i.test(ua)) return 'Firefox';
+    if (/MSIE|Trident/i.test(ua)) return 'Internet Explorer';
+    return 'Desconocido';
+  };
+
+  const getOSName = (ua: string) => {
+    if (/Windows NT/i.test(ua)) return 'Windows';
+    if (/Mac OS X/i.test(ua)) return 'macOS';
+    if (/Android/i.test(ua)) return 'Android';
+    if (/iPhone|iPad|iPod/i.test(ua)) return 'iOS';
+    if (/Linux/i.test(ua)) return 'Linux';
+    return 'Desconocido';
+  };
+
+  const getDeviceType = (ua: string) => {
+    if (/iPad|Tablet/i.test(ua)) return 'Tablet';
+    if (/Mobi|Android|iPhone|iPod/i.test(ua)) return 'Móvil';
+    return 'Escritorio';
+  };
+
+  const getDeviceName = () => {
+    const ua = navigator.userAgent;
+    const browser = getBrowserName(ua);
+    const os = getOSName(ua);
+    const deviceType = getDeviceType(ua);
+    return `${deviceType} - ${os} - ${browser}`;
+  };
+
+  const getPublicIp = async (): Promise<string | null> => {
+    try {
+      const response = await fetch('https://api.ipify.org?format=json');
+      if (!response.ok) return null;
+      const data = await response.json();
+      return data?.ip || null;
+    } catch {
+      return null;
+    }
+  };
+
+  const registrarLogAcceso = async (
+    evento: string,
+    detallesExtra?: Record<string, any>,
+    usuarioId?: string | null
+  ) => {
+    try {
+      const userAgent = navigator.userAgent || null;
+      const ip = await getPublicIp();
+
+      const detalles = {
+        nombre_dispositivo: getDeviceName(),
+        navegador: getBrowserName(userAgent || ''),
+        sistema_operativo: getOSName(userAgent || ''),
+        tipo_dispositivo: getDeviceType(userAgent || ''),
+        ...detallesExtra,
+      };
+
+      await supabase.from('logs_acceso').insert({
+        usuario_id: usuarioId || user?.id || null,
+        evento,
+        ip_address: ip,
+        user_agent: userAgent,
+        detalles,
+      });
+    } catch (error) {
+      console.error('Error registrando log:', error);
+    }
+  };
+
+  const buildPayload = () => ({
+    name: form.name.trim(),
+    cedula: form.cedula.trim(),
+    phone: form.phone.trim() || null,
+    email: form.email.trim() || null,
+    birth_date: form.birth_date,
+    sex: form.sex,
+    direccion: form.direccion.trim() || null,
+  });
+
+  const validateForm = () => {
     if (!form.name || !form.cedula || !form.birth_date) {
-      return toast.error('Nombre, cédula y fecha de nacimiento son obligatorios');
+      toast.error('Nombre, cédula y fecha de nacimiento son obligatorios');
+      return false;
+    }
+    return true;
+  };
+
+  const handleSave = async () => {
+    if (!validateForm()) return;
+
+    if (!editingId) {
+      try {
+        setSaving(true);
+
+        const payload = buildPayload();
+
+        const { error } = await supabase.from('pacientes').insert([payload]);
+        if (error) throw error;
+
+        await registrarLogAcceso('PACIENTE_CREADO', {
+          paciente_nombre: payload.name,
+          paciente_cedula: payload.cedula,
+        });
+
+        toast.success('Paciente registrado');
+        setDialogOpen(false);
+        fetchPatients();
+      } catch (error: any) {
+        toast.error(
+          'Error: ' +
+            (error.message?.includes('unique') || error.message?.includes('pacientes_cedula_key')
+              ? 'La cédula ya existe'
+              : error.message)
+        );
+      } finally {
+        setSaving(false);
+      }
+
+      return;
+    }
+
+    if (!user?.id) {
+      toast.error('No se pudo identificar al usuario actual');
+      return;
+    }
+
+    setOtpCode('');
+    setOtpDialogOpen(true);
+  };
+
+  const handleConfirmEditWithOtp = async () => {
+    if (!editingId) return;
+    if (!user?.id) {
+      toast.error('No se pudo identificar al usuario actual');
+      return;
+    }
+    if (!otpCode || otpCode.length !== 6) {
+      toast.error('Ingresa el código de 6 dígitos');
+      return;
     }
 
     try {
-      const payload = {
-        name: form.name.trim(),
-        cedula: form.cedula.trim(),
-        phone: form.phone.trim() || null,
-        email: form.email.trim() || null,
-        birth_date: form.birth_date,
-        sex: form.sex,
-        direccion: form.direccion.trim() || null,
-      };
+      setSaving(true);
 
-      if (editingId) {
-        const { error } = await supabase
-          .from('pacientes')
-          .update(payload)
-          .eq('id', editingId);
+      const { data: authUser, error: authError } = await supabase
+        .from('usuarios')
+        .select('id, username, two_factor_enabled, two_factor_secret')
+        .eq('id', user.id)
+        .maybeSingle();
 
-        if (error) throw error;
-        toast.success('Paciente actualizado');
-      } else {
-        const { error } = await supabase
-          .from('pacientes')
-          .insert([payload]);
-
-        if (error) throw error;
-        toast.success('Paciente registrado');
+      if (authError) throw authError;
+      if (!authUser) throw new Error('Usuario actual no encontrado');
+      if (!authUser.two_factor_enabled || !authUser.two_factor_secret) {
+        throw new Error('El usuario no tiene doble factor configurado');
       }
 
+      const totp = new OTPAuth.TOTP({
+        issuer: 'BioAnalítica',
+        label: authUser.username,
+        algorithm: 'SHA1',
+        digits: 6,
+        period: 30,
+        secret: authUser.two_factor_secret,
+      });
+
+      const delta = totp.validate({ token: otpCode, window: 1 });
+
+      if (delta === null) {
+        await registrarLogAcceso('OTP_RECONFIRMACION_FALLIDA_EDICION_PACIENTE', {
+          editing_id: editingId,
+          paciente_cedula: form.cedula.trim(),
+          paciente_nombre: form.name.trim(),
+        });
+
+        toast.error('Código incorrecto o expirado');
+        return;
+      }
+
+      const payload = buildPayload();
+
+      const pacienteAnterior = patients.find((p) => p.id === editingId);
+
+      const { error } = await supabase
+        .from('pacientes')
+        .update(payload)
+        .eq('id', editingId);
+
+      if (error) throw error;
+
+      await registrarLogAcceso('PACIENTE_EDITADO_CON_2FA', {
+        paciente_id: editingId,
+        antes: pacienteAnterior
+          ? {
+              name: pacienteAnterior.name || null,
+              cedula: pacienteAnterior.cedula || null,
+              phone: pacienteAnterior.phone || null,
+              email: pacienteAnterior.email || null,
+              birth_date: pacienteAnterior.birth_date || null,
+              sex: pacienteAnterior.sex || null,
+              direccion: pacienteAnterior.direccion || null,
+            }
+          : null,
+        despues: payload,
+      });
+
+      toast.success('Paciente actualizado');
+      setOtpDialogOpen(false);
       setDialogOpen(false);
+      setOtpCode('');
       fetchPatients();
     } catch (error: any) {
       toast.error(
@@ -129,6 +339,8 @@ export default function PatientsPage() {
             ? 'La cédula ya existe'
             : error.message)
       );
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -136,8 +348,17 @@ export default function PatientsPage() {
     if (!confirm('¿Eliminar este paciente? Esta acción no se puede deshacer.')) return;
 
     try {
+      const paciente = patients.find((p) => p.id === id);
+
       const { error } = await supabase.from('pacientes').delete().eq('id', id);
       if (error) throw error;
+
+      await registrarLogAcceso('PACIENTE_ELIMINADO', {
+        paciente_id: id,
+        paciente_nombre: paciente?.name || null,
+        paciente_cedula: paciente?.cedula || null,
+      });
+
       toast.success('Paciente eliminado');
       fetchPatients();
     } catch (error: any) {
@@ -335,10 +556,79 @@ export default function PatientsPage() {
 
             <Button
               onClick={handleSave}
+              disabled={saving}
               className="w-full gradient-clinical text-primary-foreground border-0 h-11 mt-4"
             >
-              {editingId ? 'Guardar Cambios' : 'Registrar Paciente'}
+              {saving ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Procesando...
+                </>
+              ) : editingId ? (
+                'Guardar Cambios'
+              ) : (
+                'Registrar Paciente'
+              )}
             </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={otpDialogOpen} onOpenChange={setOtpDialogOpen}>
+        <DialogContent className="sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl flex items-center gap-2">
+              <ShieldCheck className="w-5 h-5 text-primary" />
+              Confirmación de seguridad
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4 pt-2">
+            <p className="text-sm text-muted-foreground">
+              Para guardar cambios en los datos del paciente, ingresa nuevamente tu código de
+              autenticación de 6 dígitos.
+            </p>
+
+            <div className="space-y-2">
+              <Label className="font-semibold text-xs uppercase tracking-wider">
+                Código 2FA
+              </Label>
+              <Input
+                value={otpCode}
+                onChange={(e) => setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+                placeholder="000000"
+                className="text-center text-2xl tracking-[0.3em] font-mono"
+                autoFocus
+              />
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setOtpDialogOpen(false);
+                  setOtpCode('');
+                }}
+                disabled={saving}
+              >
+                Cancelar
+              </Button>
+
+              <Button
+                onClick={handleConfirmEditWithOtp}
+                disabled={saving}
+                className="gradient-clinical text-primary-foreground border-0"
+              >
+                {saving ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Verificando...
+                  </>
+                ) : (
+                  'Verificar y Guardar'
+                )}
+              </Button>
+            </div>
           </div>
         </DialogContent>
       </Dialog>

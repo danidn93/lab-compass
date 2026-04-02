@@ -48,6 +48,7 @@ export default function HomePage() {
 
   const [modal, setModal] = useState<null | string>(null);
   const [loading, setLoading] = useState(true);
+  const [menuOpen, setMenuOpen] = useState(false);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -78,6 +79,18 @@ export default function HomePage() {
     fetchData();
   }, []);
 
+  useEffect(() => {
+    if (menuOpen) {
+      document.body.style.overflow = "hidden";
+    } else {
+      document.body.style.overflow = "auto";
+    }
+
+    return () => {
+      document.body.style.overflow = "auto";
+    };
+  }, [menuOpen]);
+
   const lab = stats.laboratorio || {};
 
   return (
@@ -87,7 +100,10 @@ export default function HomePage() {
     >      
 
       {/* NAVBAR */}
-      <nav className="sticky top-0 z-50 border-b bg-white/95 backdrop-blur" style={{ borderColor: COLORS.border }}>
+      <nav
+        className="sticky top-0 z-50 border-b bg-white/95 backdrop-blur"
+        style={{ borderColor: COLORS.border }}
+      >
         <div className="mx-auto flex max-w-7xl items-center justify-between px-4 py-4 sm:px-6 lg:px-8">
           <a href="/" className="flex items-center gap-4">
             {lab.logo ? (
@@ -157,13 +173,137 @@ export default function HomePage() {
           </div>
 
           <button
+            onClick={() => setMenuOpen(true)}
             className="rounded-lg border px-3 py-2 text-sm md:hidden"
-            style={{ borderColor: COLORS.border }}
+            style={{ borderColor: COLORS.border, color: COLORS.dark }}
+            aria-label="Abrir menú"
           >
             ☰
           </button>
         </div>
       </nav>
+
+      {/* MENÚ MÓVIL LATERAL */}
+      <div
+        className={`fixed inset-0 z-[60] md:hidden transition ${
+          menuOpen ? "pointer-events-auto" : "pointer-events-none"
+        }`}
+      >
+        {/* fondo oscuro */}
+        <div
+          className={`absolute inset-0 bg-black/40 transition-opacity duration-300 ${
+            menuOpen ? "opacity-100" : "opacity-0"
+          }`}
+          onClick={() => setMenuOpen(false)}
+        />
+
+        {/* panel lateral */}
+        <div
+          className={`absolute right-0 top-0 h-full w-[85%] max-w-sm transform bg-white shadow-2xl transition-transform duration-300 ${
+            menuOpen ? "translate-x-0" : "translate-x-full"
+          }`}
+        >
+          <div
+            className="flex items-center justify-between border-b px-5 py-4"
+            style={{ borderColor: COLORS.border }}
+          >
+            <div className="flex items-center gap-3">
+              {lab.logo ? (
+                <img
+                  src={lab.logo}
+                  alt={lab.name || "Logo laboratorio"}
+                  className="h-12 w-12 rounded-xl object-contain"
+                  style={{ border: `1px solid ${COLORS.border}` }}
+                />
+              ) : (
+                <div
+                  className="flex h-12 w-12 items-center justify-center rounded-xl text-xl"
+                  style={{ backgroundColor: COLORS.primarySoft }}
+                >
+                  🧪
+                </div>
+              )}
+
+              <div>
+                <p className="text-sm font-bold" style={{ color: COLORS.dark }}>
+                  {lab.name || "Laboratorio Central"}
+                </p>
+                <p className="text-xs" style={{ color: COLORS.textSoft }}>
+                  Menú principal
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={() => setMenuOpen(false)}
+              className="rounded-full px-3 py-1 text-xl"
+              style={{ color: COLORS.dark, backgroundColor: "#F8FAFC" }}
+              aria-label="Cerrar menú"
+            >
+              ✕
+            </button>
+          </div>
+
+          <div className="flex flex-col p-5">
+            <a
+              href="/"
+              className="rounded-xl px-4 py-3 text-sm font-semibold transition"
+              style={{ color: COLORS.primary, backgroundColor: COLORS.primarySoft }}
+              onClick={() => setMenuOpen(false)}
+            >
+              Inicio
+            </a>
+
+            <button
+              onClick={() => {
+                setModal("quienes");
+                setMenuOpen(false);
+              }}
+              className="mt-3 rounded-xl px-4 py-3 text-left text-sm font-medium transition"
+              style={{ color: COLORS.dark, backgroundColor: COLORS.white }}
+            >
+              Quiénes somos
+            </button>
+
+            <button
+              onClick={() => {
+                setModal("servicios");
+                setMenuOpen(false);
+              }}
+              className="mt-3 rounded-xl px-4 py-3 text-left text-sm font-medium transition"
+              style={{ color: COLORS.dark, backgroundColor: COLORS.white }}
+            >
+              Servicios
+            </button>
+
+            <button
+              onClick={() => {
+                setModal("contacto");
+                setMenuOpen(false);
+              }}
+              className="mt-3 rounded-xl px-4 py-3 text-left text-sm font-medium transition"
+              style={{ color: COLORS.dark, backgroundColor: COLORS.white }}
+            >
+              Contáctanos
+            </button>
+
+            <div
+              className="mt-6 rounded-2xl p-4"
+              style={{ backgroundColor: COLORS.secondarySoft }}
+            >
+              <p className="text-xs font-semibold uppercase" style={{ color: COLORS.secondaryDark }}>
+                Contacto
+              </p>
+              <p className="mt-2 text-sm" style={{ color: COLORS.dark }}>
+                {lab.phone || "Teléfono no registrado"}
+              </p>
+              <p className="mt-1 text-sm" style={{ color: COLORS.dark }}>
+                {lab.email || "Correo no registrado"}
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
 
       {/* HERO */}
       <section
