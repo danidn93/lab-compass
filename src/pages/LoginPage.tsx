@@ -46,74 +46,33 @@ export default function LoginPage() {
 
   useEffect(() => {
     const fetchLabConfig = async () => {
-      try {
-        const { data, error } = await supabase
-          .from('configuracion_laboratorio')
-          .select('name, logo')
-          .maybeSingle();
+      const { data } = await supabase
+        .from('configuracion_laboratorio')
+        .select('name, logo')
+        .maybeSingle();
 
-        if (error) {
-          console.error('Error cargando configuración del laboratorio:', error);
-          return;
-        }
-
-        if (data) {
-          setLabConfig({
-            name: data.name || 'BioAnalítica',
-            logo: data.logo || null,
-          });
-        }
-      } catch (err) {
-        console.error('Error inesperado cargando configuración:', err);
+      if (data) {
+        setLabConfig({
+          name: data.name || 'BioAnalítica',
+          logo: data.logo || null,
+        });
       }
     };
 
     fetchLabConfig();
   }, []);
 
-  const getBrowserName = (ua: string) => {
-    if (/Edg/i.test(ua)) return 'Microsoft Edge';
-    if (/OPR|Opera/i.test(ua)) return 'Opera';
-    if (/Chrome/i.test(ua) && !/Edg/i.test(ua)) return 'Chrome';
-    if (/Safari/i.test(ua) && !/Chrome/i.test(ua)) return 'Safari';
-    if (/Firefox/i.test(ua)) return 'Firefox';
-    if (/MSIE|Trident/i.test(ua)) return 'Internet Explorer';
-    return 'Desconocido';
-  };
-
-  const getOSName = (ua: string) => {
-    if (/Windows NT/i.test(ua)) return 'Windows';
-    if (/Mac OS X/i.test(ua)) return 'macOS';
-    if (/Android/i.test(ua)) return 'Android';
-    if (/iPhone|iPad|iPod/i.test(ua)) return 'iOS';
-    if (/Linux/i.test(ua)) return 'Linux';
-    return 'Desconocido';
-  };
-
-  const getDeviceType = (ua: string) => {
-    if (/iPad|Tablet/i.test(ua)) return 'Tablet';
-    if (/Mobi|Android|iPhone|iPod/i.test(ua)) return 'Móvil';
-    return 'Escritorio';
-  };
-
   const getDeviceName = () => {
     const ua = navigator.userAgent;
-    const browser = getBrowserName(ua);
-    const os = getOSName(ua);
-    const deviceType = getDeviceType(ua);
-
-    return `${deviceType} - ${os} - ${browser}`;
+    return ua;
   };
 
   const getPublicIp = async (): Promise<string | null> => {
     try {
-      const response = await fetch('https://api.ipify.org?format=json');
-      if (!response.ok) return null;
-
-      const data = await response.json();
+      const res = await fetch('https://api.ipify.org?format=json');
+      const data = await res.json();
       return data?.ip || null;
-    } catch (error) {
-      console.error('No se pudo obtener la IP pública:', error);
+    } catch {
       return null;
     }
   };
@@ -121,42 +80,24 @@ export default function LoginPage() {
   const registrarLogAcceso = async (
     usuarioId: string | null,
     evento: string,
-    extraDetalles?: Record<string, any>
+    extra?: any
   ) => {
-    try {
-      const userAgent = navigator.userAgent || null;
-      const ip = await getPublicIp();
-      const nombreDispositivo = getDeviceName();
+    const ip = await getPublicIp();
 
-      const detalles = {
-        nombre_dispositivo: nombreDispositivo,
-        navegador: getBrowserName(userAgent || ''),
-        sistema_operativo: getOSName(userAgent || ''),
-        tipo_dispositivo: getDeviceType(userAgent || ''),
-        ...extraDetalles,
-      };
-
-      const { error } = await supabase.from('logs_acceso').insert({
-        usuario_id: usuarioId,
-        evento,
-        ip_address: ip,
-        user_agent: userAgent,
-        detalles,
-      });
-
-      if (error) {
-        console.error('Error registrando log de acceso:', error);
-      }
-    } catch (err) {
-      console.error('Error inesperado registrando log de acceso:', err);
-    }
+    await supabase.from('logs_acceso').insert({
+      usuario_id: usuarioId,
+      evento,
+      ip_address: ip,
+      user_agent: navigator.userAgent,
+      detalles: {
+        dispositivo: getDeviceName(),
+        ...extra,
+      },
+    });
   };
 
   const completeLogin = async (user: AuthUser) => {
-    await registrarLogAcceso(user.id, 'LOGIN_EXITOSO', {
-      username: user.username,
-      metodo_autenticacion: user.two_factor_enabled ? 'PASSWORD + OTP' : 'PASSWORD',
-    });
+    await registrarLogAcceso(user.id, 'LOGIN_EXITOSO');
 
     login({
       id: user.id,
@@ -175,12 +116,11 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
+      // ======================
+      // VALIDACIÓN OTP
+      // ======================
       if (showOtp) {
-        if (!tempUser) {
-          setErrorMsg('No se encontró la sesión temporal');
-          setLoading(false);
-          return;
-        }
+        if (!tempUser) throw new Error('No hay sesión OTP');
 
         const totp = new OTPAuth.TOTP({
           issuer: labConfig?.name || 'BioAnalítica',
@@ -188,25 +128,26 @@ export default function LoginPage() {
           algorithm: 'SHA1',
           digits: 6,
           period: 30,
-          secret: tempUser.two_factor_secret || '',
+          secret: OTPAuth.Secret.fromBase32(
+            tempUser.two_factor_secret || ''
+          ),
         });
 
-        const delta = totp.validate({ token: otpCode, window: 1 });
+        const delta = totp.validate({
+          token: otpCode,
+          window: 1,
+        });
 
         if (delta === null) {
-          await registrarLogAcceso(tempUser.id, 'OTP_FALLIDO', {
-            username: tempUser.username,
-            motivo: 'Código incorrecto o expirado',
-          });
-
-          setErrorMsg('Código incorrecto o expirado');
-          toast.error('Validación fallida');
+          await registrarLogAcceso(tempUser.id, 'OTP_FALLIDO');
+          setErrorMsg('Código incorrecto');
           setLoading(false);
           return;
         }
 
+        // 🔥 ACTIVAR 2FA SOLO LA PRIMERA VEZ
         if (isFirstTime) {
-          const { error: updateError } = await supabase
+          await supabase
             .from('usuarios')
             .update({
               two_factor_enabled: true,
@@ -214,45 +155,32 @@ export default function LoginPage() {
             })
             .eq('id', tempUser.id);
 
-          if (updateError) {
-            throw new Error('Error al activar 2FA');
-          }
-
-          await registrarLogAcceso(tempUser.id, '2FA_ACTIVADO', {
-            username: tempUser.username,
-          });
+          await registrarLogAcceso(tempUser.id, '2FA_ACTIVADO');
         }
 
-        await completeLogin({
-          ...tempUser,
-          two_factor_enabled: true,
-        });
-
+        await completeLogin(tempUser);
         return;
       }
 
-      const { data, error } = await supabase.rpc('login_usuario', {
+      // ======================
+      // LOGIN NORMAL
+      // ======================
+      const { data } = await supabase.rpc('login_usuario', {
         username_input: username,
         password_input: password,
       });
 
-      if (error || !data || data.length === 0) {
-        await registrarLogAcceso(null, 'LOGIN_FALLIDO', {
-          username,
-          motivo: 'Credenciales incorrectas',
-        });
-
+      if (!data || data.length === 0) {
+        await registrarLogAcceso(null, 'LOGIN_FALLIDO', { username });
         setErrorMsg('Credenciales incorrectas');
-        setLoading(false);
         return;
       }
 
       const user: AuthUser = data[0];
 
-      await registrarLogAcceso(user.id, 'LOGIN_PASSWORD_OK', {
-        username: user.username,
-      });
-
+      // ======================
+      // SI NO TIENE 2FA → GENERAR
+      // ======================
       if (!user.two_factor_enabled) {
         const secret = new OTPAuth.Secret();
         const secretBase32 = secret.base32;
@@ -266,191 +194,124 @@ export default function LoginPage() {
           secret,
         });
 
-        const qrUrl = await QRCode.toDataURL(totp.toString());
+        const qr = await QRCode.toDataURL(totp.toString());
+
+        // 🔥 GUARDAR SECRET DESDE YA
+        await supabase
+          .from('usuarios')
+          .update({
+            two_factor_secret: secretBase32,
+          })
+          .eq('id', user.id);
 
         setTempUser({
           ...user,
           two_factor_secret: secretBase32,
         });
-        setQrCodeUrl(qrUrl);
+
+        setQrCodeUrl(qr);
         setIsFirstTime(true);
         setShowOtp(true);
 
-        await registrarLogAcceso(user.id, '2FA_CONFIGURACION_INICIADA', {
-          username: user.username,
-        });
-      } else {
-        setTempUser(user);
-        setIsFirstTime(false);
-        setShowOtp(true);
-
-        await registrarLogAcceso(user.id, 'OTP_SOLICITADO', {
-          username: user.username,
-        });
+        return;
       }
-    } catch (err) {
+
+      // ======================
+      // SI YA TIENE 2FA
+      // ======================
+      setTempUser(user);
+      setIsFirstTime(false);
+      setShowOtp(true);
+    } catch (err: any) {
       console.error(err);
-
-      await registrarLogAcceso(tempUser?.id || null, 'ERROR_AUTENTICACION', {
-        username: tempUser?.username || username || null,
-        mensaje: err instanceof Error ? err.message : 'Error desconocido',
-      });
-
-      setErrorMsg('Error en el sistema de autenticación');
+      setErrorMsg('Error en autenticación');
     } finally {
       setLoading(false);
     }
   };
 
-  const handleUseAnotherAccount = async () => {
-    if (tempUser) {
-      await registrarLogAcceso(tempUser.id, 'CAMBIO_DE_CUENTA_EN_OTP', {
-        username: tempUser.username,
-      });
-    }
-
+  const resetLogin = () => {
     setShowOtp(false);
     setOtpCode('');
-    setQrCodeUrl('');
-    setIsFirstTime(false);
     setTempUser(null);
     setPassword('');
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4 relative overflow-hidden">
-      <div
-        className="absolute inset-0 opacity-[0.03] pointer-events-none"
-        style={{
-          backgroundImage: 'radial-gradient(#0f172a 1px, transparent 1px)',
-          backgroundSize: '20px 20px',
-        }}
-      />
-
-      <Card className="w-full max-w-md shadow-2xl border-0 overflow-hidden bg-white/85 backdrop-blur-sm relative z-10">
-        <div className="h-2 gradient-clinical w-full" />
-
-        <CardHeader className="text-center pt-8 pb-4">
-          <div className="mx-auto w-24 h-24 rounded-2xl bg-white shadow-md flex items-center justify-center mb-4 border border-slate-100 p-3 overflow-hidden">
-            {labConfig?.logo ? (
-              <img
-                src={labConfig.logo}
-                alt="Logo del laboratorio"
-                className="max-w-full max-h-full object-contain"
-              />
-            ) : (
-              <div className="w-full h-full gradient-clinical rounded-xl flex items-center justify-center">
-                {showOtp ? (
-                  <ShieldCheck className="text-white w-10 h-10" />
-                ) : (
-                  <FlaskConical className="text-white w-10 h-10" />
-                )}
-              </div>
-            )}
-          </div>
-
-          <h1 className="text-2xl font-bold text-slate-800 tracking-tight leading-tight">
+    <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
+      <Card className="w-full max-w-md shadow-xl">
+        <CardHeader className="text-center">
+          <h1 className="text-xl font-bold">
             {labConfig?.name || 'BioAnalítica'}
           </h1>
-
-          <p className="text-xs text-muted-foreground uppercase tracking-widest font-semibold mt-1">
-            {showOtp ? 'Verificación de Seguridad' : 'Sistema de Gestión'}
-          </p>
         </CardHeader>
 
-        <CardContent className="pb-8">
+        <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
             {!showOtp ? (
-              <div className="space-y-4">
-                <div className="space-y-2">
-                  <Label className="text-slate-600">Usuario</Label>
-                  <div className="relative">
-                    <User className="absolute left-3 top-3 w-4 h-4 text-slate-400" />
-                    <Input
-                      className="pl-10 h-11 border-slate-200"
-                      value={username}
-                      onChange={(e) => setUsername(e.target.value)}
-                      placeholder="Ej: admin_lab"
-                      required
-                    />
-                  </div>
+              <>
+                <div>
+                  <Label>Usuario</Label>
+                  <Input
+                    value={username}
+                    onChange={(e) => setUsername(e.target.value)}
+                    required
+                  />
                 </div>
 
-                <div className="space-y-2">
-                  <Label className="text-slate-600">Contraseña</Label>
-                  <div className="relative">
-                    <Lock className="absolute left-3 top-3 w-4 h-4 text-slate-400" />
-                    <Input
-                      type="password"
-                      title="password"
-                      className="pl-10 h-11 border-slate-200"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      placeholder="••••••••"
-                      required
-                    />
-                  </div>
+                <div>
+                  <Label>Contraseña</Label>
+                  <Input
+                    type="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    required
+                  />
                 </div>
-              </div>
+              </>
             ) : (
-              <div className="space-y-4 text-center">
+              <>
                 {isFirstTime && (
-                  <div className="p-4 bg-primary/5 rounded-xl border border-primary/10 mb-2">
-                    <p className="text-[10px] font-bold text-primary uppercase mb-3">
-                      Vincula tu cuenta
-                    </p>
-
-                    <div className="bg-white p-2 rounded-lg inline-block shadow-sm border">
-                      <img src={qrCodeUrl} className="w-40 h-40" alt="QR Code" />
-                    </div>
-
-                    <p className="text-[10px] mt-3 text-slate-500 leading-relaxed italic">
-                      Escanea este código con tu app de autenticación.
+                  <div className="text-center">
+                    <img src={qrCodeUrl} className="mx-auto w-40" />
+                    <p className="text-xs mt-2">
+                      Escanea con Google Authenticator
                     </p>
                   </div>
                 )}
 
-                <div className="space-y-2">
-                  <Label className="text-slate-600">Código de seguridad</Label>
-                  <Input
-                    className="text-center text-3xl h-14 tracking-[0.3em] font-mono font-bold border-2 border-primary/20 focus:border-primary"
-                    value={otpCode}
-                    onChange={(e) =>
-                      setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))
-                    }
-                    placeholder="000000"
-                    autoFocus
-                  />
-                  <p className="text-[10px] text-muted-foreground">
-                    Ingresa los 6 dígitos de tu aplicación
-                  </p>
-                </div>
+                <Input
+                  value={otpCode}
+                  onChange={(e) =>
+                    setOtpCode(e.target.value.replace(/\D/g, '').slice(0, 6))
+                  }
+                  placeholder="000000"
+                  className="text-center text-2xl"
+                />
 
                 <Button
                   type="button"
                   variant="ghost"
-                  size="sm"
-                  onClick={handleUseAnotherAccount}
-                  className="text-slate-500 hover:text-primary"
+                  onClick={resetLogin}
                 >
-                  <ArrowLeft className="w-3 h-3 mr-2" />
-                  Usar otra cuenta
+                  <ArrowLeft className="w-4 h-4 mr-2" />
+                  Cambiar cuenta
                 </Button>
-              </div>
+              </>
             )}
 
             {errorMsg && (
-              <div className="p-3 rounded-lg bg-red-50 text-red-600 text-xs font-medium text-center border border-red-100">
+              <div className="text-red-500 text-sm text-center">
                 {errorMsg}
               </div>
             )}
 
-            <Button
-              type="submit"
-              className="w-full gradient-clinical h-12 text-md font-bold shadow-lg"
-              disabled={loading}
-            >
-              {loading ? 'Procesando...' : showOtp ? 'Verificar y Entrar' : 'Iniciar Sesión'}
+            <Button type="submit" className="w-full" disabled={loading}>
+              {loading
+                ? 'Procesando...'
+                : showOtp
+                ? 'Verificar'
+                : 'Ingresar'}
             </Button>
           </form>
         </CardContent>
