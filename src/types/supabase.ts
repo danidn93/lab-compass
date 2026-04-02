@@ -14,6 +14,42 @@ export type Database = {
   }
   public: {
     Tables: {
+      clientes_facturacion: {
+        Row: {
+          created_at: string | null
+          direccion: string
+          email: string | null
+          id: string
+          identificacion: string
+          nombres: string
+          telefono: string
+          tipo_identificacion: string
+          updated_at: string | null
+        }
+        Insert: {
+          created_at?: string | null
+          direccion: string
+          email?: string | null
+          id?: string
+          identificacion: string
+          nombres: string
+          telefono: string
+          tipo_identificacion: string
+          updated_at?: string | null
+        }
+        Update: {
+          created_at?: string | null
+          direccion?: string
+          email?: string | null
+          id?: string
+          identificacion?: string
+          nombres?: string
+          telefono?: string
+          tipo_identificacion?: string
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
       configuracion_facturacion_electronica: {
         Row: {
           ambiente: string
@@ -488,16 +524,23 @@ export type Database = {
       ordenes: {
         Row: {
           access_key: string
+          billing_customer_id: string | null
           clave_acceso_sri: string | null
           code: string
           created_at: string | null
           date: string
           doctor_id: string | null
+          factura_direccion: string | null
+          factura_email: string | null
           factura_estado: string | null
           factura_fecha_autorizacion: string | null
           factura_id: string | null
+          factura_identificacion: string | null
           factura_mensaje: string | null
+          factura_nombres: string | null
           factura_ride_pdf_path: string | null
+          factura_telefono: string | null
+          factura_tipo_identificacion: string | null
           factura_xml_autorizado_path: string | null
           factura_xml_firmado_path: string | null
           factura_xml_path: string | null
@@ -512,16 +555,23 @@ export type Database = {
         }
         Insert: {
           access_key: string
+          billing_customer_id?: string | null
           clave_acceso_sri?: string | null
           code: string
           created_at?: string | null
           date?: string
           doctor_id?: string | null
+          factura_direccion?: string | null
+          factura_email?: string | null
           factura_estado?: string | null
           factura_fecha_autorizacion?: string | null
           factura_id?: string | null
+          factura_identificacion?: string | null
           factura_mensaje?: string | null
+          factura_nombres?: string | null
           factura_ride_pdf_path?: string | null
+          factura_telefono?: string | null
+          factura_tipo_identificacion?: string | null
           factura_xml_autorizado_path?: string | null
           factura_xml_firmado_path?: string | null
           factura_xml_path?: string | null
@@ -536,16 +586,23 @@ export type Database = {
         }
         Update: {
           access_key?: string
+          billing_customer_id?: string | null
           clave_acceso_sri?: string | null
           code?: string
           created_at?: string | null
           date?: string
           doctor_id?: string | null
+          factura_direccion?: string | null
+          factura_email?: string | null
           factura_estado?: string | null
           factura_fecha_autorizacion?: string | null
           factura_id?: string | null
+          factura_identificacion?: string | null
           factura_mensaje?: string | null
+          factura_nombres?: string | null
           factura_ride_pdf_path?: string | null
+          factura_telefono?: string | null
+          factura_tipo_identificacion?: string | null
           factura_xml_autorizado_path?: string | null
           factura_xml_firmado_path?: string | null
           factura_xml_path?: string | null
@@ -559,6 +616,13 @@ export type Database = {
           total?: number
         }
         Relationships: [
+          {
+            foreignKeyName: "ordenes_billing_customer_id_fkey"
+            columns: ["billing_customer_id"]
+            isOneToOne: false
+            referencedRelation: "clientes_facturacion"
+            referencedColumns: ["id"]
+          },
           {
             foreignKeyName: "ordenes_doctor_id_fkey"
             columns: ["doctor_id"]

@@ -74,6 +74,39 @@ type PaymentFormType = {
   notes: string;
 };
 
+type BillingMode = 'PACIENTE' | 'CONSUMIDOR_FINAL' | 'OTRO';
+type BillingIdType = 'CEDULA' | 'RUC' | 'PASAPORTE' | 'CONSUMIDOR_FINAL';
+
+type BillingFormType = {
+  tipo_identificacion: BillingIdType;
+  identificacion: string;
+  nombres: string;
+  direccion: string;
+  telefono: string;
+  email: string;
+};
+
+function normalizeBillingIdType(value: any): BillingIdType {
+  if (
+    value === 'CEDULA' ||
+    value === 'RUC' ||
+    value === 'PASAPORTE' ||
+    value === 'CONSUMIDOR_FINAL'
+  ) {
+    return value;
+  }
+  return 'CEDULA';
+}
+
+const CONSUMIDOR_FINAL_DATA: BillingFormType = {
+  tipo_identificacion: 'CONSUMIDOR_FINAL',
+  identificacion: '9999999999999',
+  nombres: 'CONSUMIDOR FINAL',
+  direccion: 'S/N',
+  telefono: '9999999999',
+  email: '',
+};
+
 export default function OrdersPage() {
   const [orders, setOrders] = useState<any[]>([]);
   const [patients, setPatients] = useState<any[]>([]);
@@ -87,6 +120,7 @@ export default function OrdersPage() {
   const [checkingSri, setCheckingSri] = useState<string | null>(null);
   const [savingPayment, setSavingPayment] = useState(false);
   const [generatingRide, setGeneratingRide] = useState<string | null>(null);
+  const [billingLookupLoading, setBillingLookupLoading] = useState(false);
 
   const [search, setSearch] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -102,6 +136,18 @@ export default function OrdersPage() {
   const [selectedTests, setSelectedTests] = useState<string[]>([]);
   const [patientSearch, setPatientSearch] = useState('');
   const [testSearch, setTestSearch] = useState('');
+
+  const [billingMode, setBillingMode] = useState<BillingMode>('PACIENTE');
+  const [billingCustomerId, setBillingCustomerId] = useState<string | null>(null);
+  const [billingFoundMessage, setBillingFoundMessage] = useState('');
+  const [billingForm, setBillingForm] = useState<BillingFormType>({
+    tipo_identificacion: 'CEDULA',
+    identificacion: '',
+    nombres: '',
+    direccion: '',
+    telefono: '',
+    email: '',
+  });
 
   const [patientForm, setPatientForm] = useState({
     name: '',
@@ -123,6 +169,41 @@ export default function OrdersPage() {
   useEffect(() => {
     fetchInitialData();
   }, []);
+
+  useEffect(() => {
+    if (billingMode === 'CONSUMIDOR_FINAL') {
+      setBillingCustomerId(null);
+      setBillingFoundMessage('');
+      setBillingForm(CONSUMIDOR_FINAL_DATA);
+      return;
+    }
+
+    if (billingMode === 'PACIENTE') {
+      const p = patients.find((x) => x.id === selectedPatient);
+      setBillingCustomerId(null);
+      setBillingFoundMessage('');
+
+      if (p) {
+        setBillingForm({
+          tipo_identificacion: 'CEDULA',
+          identificacion: String(p.cedula || '').trim(),
+          nombres: String(p.name || '').trim(),
+          direccion: String(p.direccion || '').trim(),
+          telefono: String(p.phone || '').trim(),
+          email: String(p.email || '').trim(),
+        });
+      } else {
+        setBillingForm({
+          tipo_identificacion: 'CEDULA',
+          identificacion: '',
+          nombres: '',
+          direccion: '',
+          telefono: '',
+          email: '',
+        });
+      }
+    }
+  }, [billingMode, selectedPatient, patients]);
 
   const fetchInitialData = async () => {
     try {
@@ -262,6 +343,18 @@ export default function OrdersPage() {
   const handleClearPatient = () => {
     setSelectedPatient('');
     setPatientSearch('');
+    if (billingMode === 'PACIENTE') {
+      setBillingForm({
+        tipo_identificacion: 'CEDULA',
+        identificacion: '',
+        nombres: '',
+        direccion: '',
+        telefono: '',
+        email: '',
+      });
+      setBillingCustomerId(null);
+      setBillingFoundMessage('');
+    }
   };
 
   const openCreatePatient = () => {
@@ -275,6 +368,30 @@ export default function OrdersPage() {
       direccion: '',
     });
     setPatientDialogOpen(true);
+  };
+
+  const resetBillingSection = () => {
+    setBillingMode('PACIENTE');
+    setBillingCustomerId(null);
+    setBillingFoundMessage('');
+    setBillingForm({
+      tipo_identificacion: 'CEDULA',
+      identificacion: '',
+      nombres: '',
+      direccion: '',
+      telefono: '',
+      email: '',
+    });
+  };
+
+  const openCreateOrderDialog = () => {
+    setSelectedTests([]);
+    setSelectedPatient('');
+    setSelectedDoctor('');
+    setPatientSearch('');
+    setTestSearch('');
+    resetBillingSection();
+    setDialogOpen(true);
   };
 
   const handleSavePatient = async () => {
@@ -324,6 +441,170 @@ export default function OrdersPage() {
     } finally {
       setCreatingPatient(false);
     }
+  };
+
+  const buscarClienteFacturacion = async (
+    identificacion: string,
+    tipoIdentificacion: BillingIdType
+  ) => {
+    const id = identificacion.trim();
+
+    if (!id || tipoIdentificacion === 'CONSUMIDOR_FINAL') return;
+
+    try {
+      setBillingLookupLoading(true);
+      setBillingFoundMessage('');
+
+      const { data, error } = await supabase
+        .from('clientes_facturacion')
+        .select('*')
+        .eq('tipo_identificacion', tipoIdentificacion)
+        .eq('identificacion', id)
+        .limit(1);
+
+      if (error) throw error;
+
+      const cliente = data?.[0];
+
+      if (cliente) {
+        setBillingCustomerId(cliente.id);
+        setBillingForm({
+          tipo_identificacion: normalizeBillingIdType(cliente.tipo_identificacion),
+          identificacion: cliente.identificacion || '',
+          nombres: cliente.nombres || '',
+          direccion: cliente.direccion || '',
+          telefono: cliente.telefono || '',
+          email: cliente.email || '',
+        });
+        setBillingFoundMessage('Cliente de facturación encontrado.');
+      } else {
+        setBillingCustomerId(null);
+        setBillingFoundMessage('No existe registrado. Ingrese los datos manualmente.');
+      }
+    } catch (error: any) {
+      toast.error('Error al buscar cliente de facturación: ' + error.message);
+    } finally {
+      setBillingLookupLoading(false);
+    }
+  };
+
+  const upsertBillingCustomer = async (billingData: BillingFormType) => {
+    const payload = {
+      tipo_identificacion: billingData.tipo_identificacion,
+      identificacion: billingData.identificacion.trim(),
+      nombres: billingData.nombres.trim(),
+      direccion: billingData.direccion.trim(),
+      telefono: billingData.telefono.trim(),
+      email: billingData.email.trim() || null,
+      updated_at: new Date().toISOString(),
+    };
+
+    if (billingCustomerId) {
+      const { data, error } = await supabase
+        .from('clientes_facturacion')
+        .update(payload)
+        .eq('id', billingCustomerId)
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data;
+    }
+
+    const { data: existingRows, error: existingError } = await supabase
+      .from('clientes_facturacion')
+      .select('*')
+      .eq('tipo_identificacion', payload.tipo_identificacion)
+      .eq('identificacion', payload.identificacion)
+      .limit(1);
+
+    if (existingError) throw existingError;
+
+    const existing = existingRows?.[0];
+
+    if (existing) {
+      const { data, error } = await supabase
+        .from('clientes_facturacion')
+        .update(payload)
+        .eq('id', existing.id)
+        .select()
+        .single();
+
+      if (error) throw error;
+      return data;
+    }
+
+    const { data, error } = await supabase
+      .from('clientes_facturacion')
+      .insert([payload])
+      .select()
+      .single();
+
+    if (error) throw error;
+    return data;
+  };
+
+  const validarFacturacion = (): { ok: boolean; data?: BillingFormType; message?: string } => {
+    if (billingMode === 'PACIENTE') {
+      if (!selectedPatientData) {
+        return { ok: false, message: 'Debe seleccionar un paciente' };
+      }
+
+      const data: BillingFormType = {
+        tipo_identificacion: 'CEDULA',
+        identificacion: String(selectedPatientData.cedula || '').trim(),
+        nombres: String(selectedPatientData.name || '').trim(),
+        direccion: String(selectedPatientData.direccion || '').trim(),
+        telefono: String(selectedPatientData.phone || '').trim(),
+        email: String(selectedPatientData.email || '').trim(),
+      };
+
+      if (!data.identificacion) {
+        return { ok: false, message: 'El paciente no tiene cédula registrada' };
+      }
+      if (!data.nombres) {
+        return { ok: false, message: 'El paciente no tiene nombre válido' };
+      }
+      if (!data.direccion) {
+        return { ok: false, message: 'El paciente no tiene dirección registrada' };
+      }
+      if (!data.telefono) {
+        return { ok: false, message: 'El paciente no tiene teléfono registrado' };
+      }
+
+      return { ok: true, data };
+    }
+
+    if (billingMode === 'CONSUMIDOR_FINAL') {
+      return { ok: true, data: CONSUMIDOR_FINAL_DATA };
+    }
+
+    const data: BillingFormType = {
+      tipo_identificacion: billingForm.tipo_identificacion,
+      identificacion: billingForm.identificacion.trim(),
+      nombres: billingForm.nombres.trim(),
+      direccion: billingForm.direccion.trim(),
+      telefono: billingForm.telefono.trim(),
+      email: billingForm.email.trim(),
+    };
+
+    if (!data.tipo_identificacion) {
+      return { ok: false, message: 'Debe seleccionar el tipo de identificación' };
+    }
+    if (!data.identificacion) {
+      return { ok: false, message: 'Debe ingresar la identificación del cliente' };
+    }
+    if (!data.nombres) {
+      return { ok: false, message: 'Debe ingresar los nombres del cliente' };
+    }
+    if (!data.direccion) {
+      return { ok: false, message: 'Debe ingresar la dirección del cliente' };
+    }
+    if (!data.telefono) {
+      return { ok: false, message: 'Debe ingresar el teléfono del cliente' };
+    }
+
+    return { ok: true, data };
   };
 
   const openRidePdf = async (pdfPath: string) => {
@@ -421,6 +702,12 @@ export default function OrdersPage() {
       return;
     }
 
+    const validacionFact = validarFacturacion();
+    if (!validacionFact.ok || !validacionFact.data) {
+      toast.error(validacionFact.message || 'Datos de facturación incompletos');
+      return;
+    }
+
     setCreating(true);
 
     const total = resumenTotales.total;
@@ -428,6 +715,8 @@ export default function OrdersPage() {
     const accessKey = generateAccessKey();
 
     try {
+      const billingCustomer = await upsertBillingCustomer(validacionFact.data);
+
       const { data: order, error: orderError } = await supabase
         .from('ordenes')
         .insert([
@@ -439,6 +728,13 @@ export default function OrdersPage() {
             total,
             status: 'pending',
             factura_estado: 'PENDIENTE',
+            billing_customer_id: billingCustomer?.id || null,
+            factura_tipo_identificacion: validacionFact.data.tipo_identificacion,
+            factura_identificacion: validacionFact.data.identificacion,
+            factura_nombres: validacionFact.data.nombres,
+            factura_direccion: validacionFact.data.direccion,
+            factura_telefono: validacionFact.data.telefono,
+            factura_email: validacionFact.data.email || null,
           },
         ])
         .select()
@@ -539,6 +835,7 @@ export default function OrdersPage() {
       setSelectedTests([]);
       setPatientSearch('');
       setTestSearch('');
+      resetBillingSection();
       await fetchInitialData();
 
       if (confirm('¿Desea imprimir el ticket de recepción?')) {
@@ -813,6 +1110,14 @@ export default function OrdersPage() {
       ? `<div><b>MÉDICO:</b> ${order.doctores.nombre}</div>`
       : '';
 
+    const facturacionHtml = `
+      <div class="line"></div>
+      <div class="bold">DATOS FACTURA</div>
+      <div><b>NOMBRE:</b> ${order.factura_nombres || '—'}</div>
+      <div><b>ID:</b> ${order.factura_identificacion || '—'}</div>
+      <div><b>TIPO:</b> ${order.factura_tipo_identificacion || '—'}</div>
+    `;
+
     const printWindow = window.open('', '_blank', 'width=320,height=950');
     if (!printWindow) return;
 
@@ -895,8 +1200,10 @@ export default function OrdersPage() {
           <div><b>ORDEN:</b> ${order.code}</div>
           <div><b>FECHA:</b> ${new Date(order.created_at).toLocaleDateString()}</div>
           <div><b>PACIENTE:</b> ${order.pacientes?.name || ''}</div>
-          <div><b>ID:</b> ${order.pacientes?.cedula || ''}</div>
+          <div><b>ID PACIENTE:</b> ${order.pacientes?.cedula || ''}</div>
           ${doctorHtml}
+
+          ${facturacionHtml}
 
           <div class="line"></div>
 
@@ -991,7 +1298,9 @@ export default function OrdersPage() {
       o.pacientes?.name?.toLowerCase().includes(q) ||
       o.doctores?.nombre?.toLowerCase().includes(q) ||
       o.numero_factura?.toLowerCase().includes(q) ||
-      o.clave_acceso_sri?.toLowerCase().includes(q)
+      o.clave_acceso_sri?.toLowerCase().includes(q) ||
+      o.factura_nombres?.toLowerCase().includes(q) ||
+      o.factura_identificacion?.toLowerCase().includes(q)
     );
   });
 
@@ -1014,14 +1323,7 @@ export default function OrdersPage() {
         </div>
 
         <Button
-          onClick={() => {
-            setSelectedTests([]);
-            setSelectedPatient('');
-            setSelectedDoctor('');
-            setPatientSearch('');
-            setTestSearch('');
-            setDialogOpen(true);
-          }}
+          onClick={openCreateOrderDialog}
           className="gradient-clinical text-primary-foreground border-0"
         >
           <Plus className="w-4 h-4 mr-2" /> Nueva Orden
@@ -1032,7 +1334,7 @@ export default function OrdersPage() {
         <Search className="absolute left-3 top-3 w-4 h-4 text-muted-foreground" />
         <Input
           className="pl-10"
-          placeholder="Buscar por código, paciente, médico o factura..."
+          placeholder="Buscar por código, paciente, médico, factura o cliente..."
           value={search}
           onChange={(e) => setSearch(e.target.value)}
         />
@@ -1231,7 +1533,7 @@ export default function OrdersPage() {
       </Card>
 
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-2xl w-[95vw] max-h-[90vh] overflow-hidden rounded-3xl p-0">
+        <DialogContent className="max-w-3xl w-[96vw] max-h-[90vh] overflow-hidden rounded-3xl p-0">
           <div className="flex max-h-[90vh] flex-col">
             <DialogHeader className="shrink-0 px-6 pt-6 pb-2 border-b bg-white">
               <DialogTitle className="font-display text-3xl font-bold">
@@ -1325,6 +1627,212 @@ export default function OrdersPage() {
                     )}
                   </div>
                 )}
+              </div>
+
+              <div className="space-y-3">
+                <Label className="text-xs font-bold uppercase tracking-wide text-slate-700">
+                  Datos de facturación
+                </Label>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setBillingMode('PACIENTE')}
+                    className={`rounded-2xl border p-4 text-left transition ${
+                      billingMode === 'PACIENTE'
+                        ? 'border-primary bg-primary/5'
+                        : 'border-slate-200 bg-white'
+                    }`}
+                  >
+                    <div className="font-semibold">A nombre del paciente</div>
+                    <div className="text-xs text-slate-500 mt-1">
+                      Usa los datos del paciente seleccionado
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setBillingMode('CONSUMIDOR_FINAL')}
+                    className={`rounded-2xl border p-4 text-left transition ${
+                      billingMode === 'CONSUMIDOR_FINAL'
+                        ? 'border-primary bg-primary/5'
+                        : 'border-slate-200 bg-white'
+                    }`}
+                  >
+                    <div className="font-semibold">Consumidor final</div>
+                    <div className="text-xs text-slate-500 mt-1">
+                      Usa datos estándar de consumidor final
+                    </div>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setBillingMode('OTRO');
+                      setBillingCustomerId(null);
+                      setBillingFoundMessage('');
+                      setBillingForm({
+                        tipo_identificacion: 'CEDULA',
+                        identificacion: '',
+                        nombres: '',
+                        direccion: '',
+                        telefono: '',
+                        email: '',
+                      });
+                    }}
+                    className={`rounded-2xl border p-4 text-left transition ${
+                      billingMode === 'OTRO'
+                        ? 'border-primary bg-primary/5'
+                        : 'border-slate-200 bg-white'
+                    }`}
+                  >
+                    <div className="font-semibold">Otro cliente</div>
+                    <div className="text-xs text-slate-500 mt-1">
+                      Buscar por identificación o registrar uno nuevo
+                    </div>
+                  </button>
+                </div>
+
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-4">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="space-y-2">
+                      <Label className="font-semibold text-xs uppercase tracking-wider">
+                        Tipo de identificación
+                      </Label>
+                      <Select
+                        value={billingForm.tipo_identificacion}
+                        onValueChange={(v: BillingIdType) => {
+                          setBillingCustomerId(null);
+                          setBillingFoundMessage('');
+                          setBillingForm((f) => ({
+                            ...f,
+                            tipo_identificacion: v,
+                            identificacion: v === 'CONSUMIDOR_FINAL' ? '9999999999999' : '',
+                          }));
+                        }}
+                        disabled={billingMode !== 'OTRO'}
+                      >
+                        <SelectTrigger className="bg-white">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="CEDULA">Cédula</SelectItem>
+                          <SelectItem value="RUC">RUC</SelectItem>
+                          <SelectItem value="PASAPORTE">Pasaporte</SelectItem>
+                          <SelectItem value="CONSUMIDOR_FINAL">Consumidor final</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="font-semibold text-xs uppercase tracking-wider">
+                        Identificación
+                      </Label>
+                      <div className="relative">
+                        <Input
+                          value={billingForm.identificacion}
+                          onChange={(e) =>
+                            setBillingForm((f) => ({
+                              ...f,
+                              identificacion: e.target.value,
+                            }))
+                          }
+                          onBlur={() => {
+                            if (billingMode === 'OTRO') {
+                              buscarClienteFacturacion(
+                                billingForm.identificacion,
+                                billingForm.tipo_identificacion
+                              );
+                            }
+                          }}
+                          placeholder="Ingrese la identificación"
+                          disabled={billingMode !== 'OTRO'}
+                          className="bg-white pr-10"
+                        />
+                        {billingLookupLoading && (
+                          <Loader2 className="w-4 h-4 animate-spin absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                        )}
+                      </div>
+                      {billingMode === 'OTRO' && (
+                        <div className="text-xs text-slate-500">
+                          Al salir del campo se buscará en clientes de facturación.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {billingFoundMessage && (
+                    <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-700">
+                      {billingFoundMessage}
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 gap-4">
+                    <div className="space-y-2">
+                      <Label className="font-semibold text-xs uppercase tracking-wider">
+                        Nombres / Razón social
+                      </Label>
+                      <Input
+                        value={billingForm.nombres}
+                        onChange={(e) =>
+                          setBillingForm((f) => ({ ...f, nombres: e.target.value }))
+                        }
+                        placeholder="Nombres completos o razón social"
+                        disabled={billingMode === 'PACIENTE' || billingMode === 'CONSUMIDOR_FINAL'}
+                        className="bg-white"
+                      />
+                    </div>
+
+                    <div className="space-y-2">
+                      <Label className="font-semibold text-xs uppercase tracking-wider">
+                        Dirección
+                      </Label>
+                      <Textarea
+                        value={billingForm.direccion}
+                        onChange={(e) =>
+                          setBillingForm((f) => ({ ...f, direccion: e.target.value }))
+                        }
+                        placeholder="Dirección del cliente de facturación"
+                        rows={2}
+                        disabled={billingMode === 'PACIENTE' || billingMode === 'CONSUMIDOR_FINAL'}
+                        className="bg-white"
+                      />
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label className="font-semibold text-xs uppercase tracking-wider">
+                          Teléfono
+                        </Label>
+                        <Input
+                          value={billingForm.telefono}
+                          onChange={(e) =>
+                            setBillingForm((f) => ({ ...f, telefono: e.target.value }))
+                          }
+                          placeholder="0999999999"
+                          disabled={billingMode === 'PACIENTE' || billingMode === 'CONSUMIDOR_FINAL'}
+                          className="bg-white"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="font-semibold text-xs uppercase tracking-wider">
+                          Email
+                        </Label>
+                        <Input
+                          type="email"
+                          value={billingForm.email}
+                          onChange={(e) =>
+                            setBillingForm((f) => ({ ...f, email: e.target.value }))
+                          }
+                          placeholder="correo@ejemplo.com"
+                          disabled={billingMode === 'PACIENTE' || billingMode === 'CONSUMIDOR_FINAL'}
+                          className="bg-white"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                </div>
               </div>
 
               <div className="space-y-3">
@@ -1787,6 +2295,16 @@ export default function OrdersPage() {
                 <div>
                   <Label className="text-xs uppercase text-muted-foreground">Número de factura</Label>
                   <div className="font-semibold">{selectedOrder.numero_factura || '—'}</div>
+                </div>
+
+                <div className="md:col-span-2 rounded-xl border bg-slate-50 p-4">
+                  <div className="font-semibold mb-2">Cliente de facturación</div>
+                  <div><b>Nombre:</b> {selectedOrder.factura_nombres || '—'}</div>
+                  <div><b>Tipo ID:</b> {selectedOrder.factura_tipo_identificacion || '—'}</div>
+                  <div><b>Identificación:</b> {selectedOrder.factura_identificacion || '—'}</div>
+                  <div><b>Dirección:</b> {selectedOrder.factura_direccion || '—'}</div>
+                  <div><b>Teléfono:</b> {selectedOrder.factura_telefono || '—'}</div>
+                  <div><b>Email:</b> {selectedOrder.factura_email || '—'}</div>
                 </div>
 
                 <div>

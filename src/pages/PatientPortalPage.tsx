@@ -14,7 +14,6 @@ import {
   ChevronLeft,
   Download,
   CalendarDays,
-  CreditCard,
   AlertTriangle,
   CheckCircle2,
 } from "lucide-react";
@@ -42,6 +41,27 @@ type ResultType = "numeric" | "boolean" | "text";
 
 const PAYPHONE_TOKEN = import.meta.env.VITE_PAYPHONE_TOKEN || "";
 const PAYPHONE_STORE_ID = import.meta.env.VITE_PAYPHONE_STORE_ID || "";
+
+const COLORS = {
+  primary: "#8C1D2C",
+  primaryDark: "#6F1522",
+  primarySoft: "#F7E9EC",
+  secondary: "#5E7C96",
+  secondaryDark: "#3E5A72",
+  secondarySoft: "#EAF2F7",
+  dark: "#1F2937",
+  darker: "#111827",
+  light: "#F8FAFC",
+  border: "#E5E7EB",
+  textSoft: "#64748B",
+  white: "#FFFFFF",
+  successBg: "#ECFDF5",
+  successText: "#047857",
+  warningBg: "#FFF7ED",
+  warningText: "#C2410C",
+  dangerBg: "#FEF2F2",
+  dangerText: "#B91C1C",
+};
 
 export default function PatientPortalPage() {
   const [code, setCode] = useState("");
@@ -370,22 +390,45 @@ export default function PatientPortalPage() {
     }
   };
 
-  const getBadgeClass = (det: any) => {
+  const getBadgeStyle = (det: any) => {
     switch (det.status) {
       case "normal":
-        return "bg-emerald-50 text-emerald-600 border-emerald-100";
+        return {
+          backgroundColor: "#ECFDF5",
+          color: "#047857",
+          borderColor: "#A7F3D0",
+        };
       case "high":
-        return "bg-rose-50 text-rose-600 border-rose-100";
+        return {
+          backgroundColor: "#FEF2F2",
+          color: "#B91C1C",
+          borderColor: "#FECACA",
+        };
       case "low":
-        return "bg-amber-50 text-amber-600 border-amber-100";
+        return {
+          backgroundColor: "#FFF7ED",
+          color: "#C2410C",
+          borderColor: "#FED7AA",
+        };
       case "positive":
-        return "bg-rose-50 text-rose-600 border-rose-100";
+        return {
+          backgroundColor: "#FEF2F2",
+          color: "#B91C1C",
+          borderColor: "#FECACA",
+        };
       case "negative":
-        return "bg-emerald-50 text-emerald-600 border-emerald-100";
+        return {
+          backgroundColor: "#ECFDF5",
+          color: "#047857",
+          borderColor: "#A7F3D0",
+        };
       case "text":
-        return "bg-slate-100 text-slate-700 border-slate-200";
       default:
-        return "bg-slate-100 text-slate-700 border-slate-200";
+        return {
+          backgroundColor: "#F8FAFC",
+          color: "#475569",
+          borderColor: "#CBD5E1",
+        };
     }
   };
 
@@ -606,13 +649,25 @@ export default function PatientPortalPage() {
   };
 
   const renderSearchCard = () => (
-    <Card className="shadow-2xl border-0 overflow-hidden animate-in fade-in slide-in-from-bottom-4 duration-700">
-      <div className="h-2 gradient-clinical w-full" />
-      <CardHeader className="text-center pb-2 pt-8">
-        <CardTitle className="text-xl font-display font-bold text-slate-700">
+    <Card
+      className="overflow-hidden border-0 shadow-2xl animate-in fade-in slide-in-from-bottom-4 duration-700"
+      style={{ backgroundColor: COLORS.white }}
+    >
+      <div
+        className="h-2 w-full"
+        style={{
+          background: `linear-gradient(to right, ${COLORS.primary}, ${COLORS.secondaryDark})`,
+        }}
+      />
+
+      <CardHeader className="pb-2 pt-8 text-center">
+        <CardTitle
+          className="text-xl font-bold"
+          style={{ color: COLORS.dark }}
+        >
           Acceso a Pacientes
         </CardTitle>
-        <p className="text-sm text-slate-400">
+        <p className="text-sm" style={{ color: COLORS.textSoft }}>
           Consulte su reporte clínico de forma segura
         </p>
       </CardHeader>
@@ -620,13 +675,20 @@ export default function PatientPortalPage() {
       <CardContent className="space-y-6 p-8">
         <div className="space-y-4">
           <div className="space-y-2">
-            <Label className="text-xs font-bold uppercase text-slate-500 ml-1">
+            <Label
+              className="ml-1 text-xs font-bold uppercase"
+              style={{ color: COLORS.textSoft }}
+            >
               Código de Orden
             </Label>
-            <div className="relative group">
-              <Search className="absolute left-3 top-3 w-4 h-4 text-slate-400 group-focus-within:text-primary transition-colors" />
+            <div className="group relative">
+              <Search
+                className="absolute left-3 top-3 h-4 w-4 transition-colors"
+                style={{ color: COLORS.textSoft }}
+              />
               <Input
-                className="pl-10 h-12 bg-slate-50 border-slate-200 focus:bg-white transition-all"
+                className="h-12 border-slate-200 pl-10"
+                style={{ backgroundColor: COLORS.light }}
                 placeholder="Ej: ORD-2024-XXXX"
                 value={code}
                 onChange={(e) => setCode(e.target.value.toUpperCase())}
@@ -635,13 +697,20 @@ export default function PatientPortalPage() {
           </div>
 
           <div className="space-y-2">
-            <Label className="text-xs font-bold uppercase text-slate-500 ml-1">
+            <Label
+              className="ml-1 text-xs font-bold uppercase"
+              style={{ color: COLORS.textSoft }}
+            >
               Clave de Acceso
             </Label>
-            <div className="relative group">
-              <Lock className="absolute left-3 top-3 w-4 h-4 text-slate-400 group-focus-within:text-primary transition-colors" />
+            <div className="group relative">
+              <Lock
+                className="absolute left-3 top-3 h-4 w-4 transition-colors"
+                style={{ color: COLORS.textSoft }}
+              />
               <Input
-                className="pl-10 h-12 bg-slate-50 border-slate-200 focus:bg-white transition-all font-mono"
+                className="h-12 border-slate-200 pl-10 font-mono"
+                style={{ backgroundColor: COLORS.light }}
                 placeholder="******"
                 value={accessKey}
                 onChange={(e) => setAccessKey(e.target.value.toUpperCase())}
@@ -652,7 +721,14 @@ export default function PatientPortalPage() {
         </div>
 
         {error && (
-          <div className="p-3 rounded-lg bg-rose-50 border border-rose-100 text-rose-600 text-sm font-medium text-center">
+          <div
+            className="rounded-lg border p-3 text-center text-sm font-medium"
+            style={{
+              backgroundColor: COLORS.dangerBg,
+              color: COLORS.dangerText,
+              borderColor: "#FECACA",
+            }}
+          >
             {error}
           </div>
         )}
@@ -660,16 +736,22 @@ export default function PatientPortalPage() {
         <Button
           onClick={handleSearch}
           disabled={loading || confirmingPayment}
-          className="w-full h-12 gradient-clinical text-primary-foreground border-0 text-lg font-bold shadow-lg shadow-blue-200 hover:scale-[1.02] active:scale-[0.98] transition-all"
+          className="h-12 w-full border-0 text-lg font-bold text-white shadow-lg transition-all hover:scale-[1.02] active:scale-[0.98]"
+          style={{
+            background: `linear-gradient(to right, ${COLORS.primary}, ${COLORS.secondaryDark})`,
+          }}
         >
           {loading || confirmingPayment ? (
-            <Loader2 className="w-5 h-5 animate-spin" />
+            <Loader2 className="h-5 w-5 animate-spin" />
           ) : (
             "Consultar Resultados"
           )}
         </Button>
 
-        <p className="text-[11px] text-slate-400 text-center px-4 leading-relaxed">
+        <p
+          className="px-4 text-center text-[11px] leading-relaxed"
+          style={{ color: COLORS.textSoft }}
+        >
           Su código y clave de acceso se encuentran impresos en el ticket
           entregado en recepción.
         </p>
@@ -685,21 +767,24 @@ export default function PatientPortalPage() {
           setFoundOrder(null);
           setError("");
         }}
-        className="text-slate-500 hover:text-primary"
+        style={{ color: COLORS.textSoft }}
       >
-        <ChevronLeft className="w-4 h-4 mr-1" />
+        <ChevronLeft className="mr-1 h-4 w-4" />
         Nueva Consulta
       </Button>
 
       <Button
         onClick={handleDownload}
         disabled={downloading || !isPaid || !isCompleted}
-        className="gradient-clinical text-primary-foreground border-0 shadow-md"
+        className="border-0 text-white shadow-md"
+        style={{
+          background: `linear-gradient(to right, ${COLORS.primary}, ${COLORS.secondaryDark})`,
+        }}
       >
         {downloading ? (
-          <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+          <Loader2 className="mr-2 h-4 w-4 animate-spin" />
         ) : (
-          <Download className="w-4 h-4 mr-2" />
+          <Download className="mr-2 h-4 w-4" />
         )}
         Descargar Reporte Oficial
       </Button>
@@ -707,40 +792,57 @@ export default function PatientPortalPage() {
   );
 
   const renderOrderSummary = () => (
-    <Card className="bg-white border-0 shadow-xl ring-1 ring-slate-100">
+    <Card
+      className="border-0 bg-white shadow-xl"
+      style={{ boxShadow: "0 10px 30px rgba(15,23,42,0.08)" }}
+    >
       <CardContent className="p-6">
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-6 text-sm">
+        <div className="grid grid-cols-2 gap-6 text-sm md:grid-cols-4">
           <div className="space-y-1">
-            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+            <p
+              className="text-xs font-bold uppercase tracking-widest"
+              style={{ color: COLORS.textSoft }}
+            >
               Paciente
             </p>
-            <p className="font-bold text-slate-800">
+            <p className="font-bold" style={{ color: COLORS.dark }}>
               {foundOrder.pacientes?.name}
             </p>
           </div>
 
           <div className="space-y-1">
-            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+            <p
+              className="text-xs font-bold uppercase tracking-widest"
+              style={{ color: COLORS.textSoft }}
+            >
               No. Orden
             </p>
-            <p className="font-mono font-bold text-blue-600">{foundOrder.code}</p>
+            <p className="font-mono font-bold" style={{ color: COLORS.primary }}>
+              {foundOrder.code}
+            </p>
           </div>
 
           <div className="space-y-1">
-            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest flex items-center gap-1">
-              <CalendarDays className="w-3 h-3" />
+            <p
+              className="flex items-center gap-1 text-xs font-bold uppercase tracking-widest"
+              style={{ color: COLORS.textSoft }}
+            >
+              <CalendarDays className="h-3 w-3" />
               Fecha resultado
             </p>
-            <p className="font-bold text-slate-800">
+            <p className="font-bold" style={{ color: COLORS.dark }}>
               {formatDisplayDate(firstResultDate)}
             </p>
           </div>
 
           <div className="space-y-1">
-            <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">
+            <p
+              className="text-xs font-bold uppercase tracking-widest"
+              style={{ color: COLORS.textSoft }}
+            >
               Edad
             </p>
-            <p className="font-bold text-slate-800">
+            <p className="font-bold" style={{ color: COLORS.dark }}>
               {calcAge(foundOrder.pacientes?.birth_date)} años
             </p>
           </div>
@@ -759,99 +861,161 @@ export default function PatientPortalPage() {
   );
 
   const renderPendingPayment = () => {
-    const phoneNumber = "593985044520"; // sin espacios ni +
-    
+    const phoneNumber = "593985044520";
+
     const message = encodeURIComponent(
       `Hola, necesito regularizar el pago de mi orden.\n\n` +
-      `Paciente: ${foundOrder?.pacientes?.name}\n` +
-      `Orden: ${foundOrder?.code}\n` +
-      `Valor pendiente: $${pendingAmount.toFixed(2)}\n\n` +
-      `Por favor ayúdenme con el proceso de pago para poder revisar mis resultados.`
+        `Paciente: ${foundOrder?.pacientes?.name}\n` +
+        `Orden: ${foundOrder?.code}\n` +
+        `Valor pendiente: $${pendingAmount.toFixed(2)}\n\n` +
+        `Por favor ayúdenme con el proceso de pago para poder revisar mis resultados.`
     );
 
     const whatsappUrl = `https://wa.me/${phoneNumber}?text=${message}`;
 
     return (
-      <Card className="border-0 shadow-lg overflow-hidden">
-        <div className="bg-amber-50 px-6 py-4 border-b border-amber-100">
+      <Card className="overflow-hidden border-0 shadow-lg">
+        <div
+          className="border-b px-6 py-4"
+          style={{
+            backgroundColor: COLORS.warningBg,
+            borderColor: "#FED7AA",
+          }}
+        >
           <div className="flex items-center gap-3">
-            <AlertTriangle className="w-5 h-5 text-amber-600" />
+            <AlertTriangle
+              className="h-5 w-5"
+              style={{ color: COLORS.warningText }}
+            />
             <div>
-              <h3 className="font-display font-bold text-amber-800">
+              <h3
+                className="font-bold"
+                style={{ color: COLORS.warningText }}
+              >
                 Pago pendiente
               </h3>
-              <p className="text-sm text-amber-700">
+              <p className="text-sm" style={{ color: COLORS.warningText }}>
                 Sus resultados no pueden ser consultados hasta cubrir el valor total de los exámenes.
               </p>
             </div>
           </div>
         </div>
 
-        <CardContent className="p-6 space-y-5">
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="rounded-xl border bg-slate-50 p-4">
-              <p className="text-xs uppercase font-bold text-slate-400">Total</p>
-              <p className="text-2xl font-black text-slate-800">
+        <CardContent className="space-y-5 p-6">
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+            <div
+              className="rounded-xl border p-4"
+              style={{ backgroundColor: COLORS.light, borderColor: COLORS.border }}
+            >
+              <p
+                className="text-xs font-bold uppercase"
+                style={{ color: COLORS.textSoft }}
+              >
+                Total
+              </p>
+              <p className="text-2xl font-black" style={{ color: COLORS.dark }}>
                 ${totalAmount.toFixed(2)}
               </p>
             </div>
 
-            <div className="rounded-xl border bg-slate-50 p-4">
-              <p className="text-xs uppercase font-bold text-slate-400">Pagado</p>
-              <p className="text-2xl font-black text-emerald-700">
+            <div
+              className="rounded-xl border p-4"
+              style={{ backgroundColor: COLORS.successBg, borderColor: "#A7F3D0" }}
+            >
+              <p
+                className="text-xs font-bold uppercase"
+                style={{ color: COLORS.successText }}
+              >
+                Pagado
+              </p>
+              <p
+                className="text-2xl font-black"
+                style={{ color: COLORS.successText }}
+              >
                 ${paidAmount.toFixed(2)}
               </p>
             </div>
 
-            <div className="rounded-xl border bg-rose-50 border-rose-100 p-4">
-              <p className="text-xs uppercase font-bold text-rose-400">
+            <div
+              className="rounded-xl border p-4"
+              style={{ backgroundColor: COLORS.dangerBg, borderColor: "#FECACA" }}
+            >
+              <p
+                className="text-xs font-bold uppercase"
+                style={{ color: COLORS.dangerText }}
+              >
                 Saldo pendiente
               </p>
-              <p className="text-2xl font-black text-rose-700">
+              <p
+                className="text-2xl font-black"
+                style={{ color: COLORS.dangerText }}
+              >
                 ${pendingAmount.toFixed(2)}
               </p>
             </div>
           </div>
 
-          {/* BOTÓN WHATSAPP */}
           <div className="space-y-3">
             <Button
               onClick={() => window.open(whatsappUrl, "_blank")}
-              className="w-full h-12 bg-green-600 hover:bg-green-700 text-white text-lg font-bold shadow-lg"
+              className="h-12 w-full bg-green-600 text-lg font-bold text-white shadow-lg hover:bg-green-700"
             >
               Gestionar pago por WhatsApp
             </Button>
 
-            <p className="text-xs text-slate-500 text-center">
+            <p
+              className="text-center text-xs"
+              style={{ color: COLORS.textSoft }}
+            >
               Será redirigido a WhatsApp para coordinar su pago y habilitar la revisión de resultados.
             </p>
           </div>
+
+          <div
+            ref={paymentContainerRef}
+            id="payphone-payment-box"
+            className="pt-2"
+          />
         </CardContent>
       </Card>
     );
   };
 
   const renderProcessingResults = () => (
-    <Card className="border-0 shadow-lg overflow-hidden">
-      <div className="bg-blue-50 px-6 py-4 border-b border-blue-100">
+    <Card className="overflow-hidden border-0 shadow-lg">
+      <div
+        className="border-b px-6 py-4"
+        style={{
+          backgroundColor: COLORS.secondarySoft,
+          borderColor: "#BFDBFE",
+        }}
+      >
         <div className="flex items-center gap-3">
-          <Loader2 className="w-5 h-5 text-blue-600 animate-spin" />
+          <Loader2
+            className="h-5 w-5 animate-spin"
+            style={{ color: COLORS.secondaryDark }}
+          />
           <div>
-            <h3 className="font-display font-bold text-blue-800">
+            <h3 className="font-bold" style={{ color: COLORS.secondaryDark }}>
               Resultados en proceso
             </h3>
-            <p className="text-sm text-blue-700">
-              Su pago ya fue registrado, pero los resultados todavía no han sido
-              finalizados por el laboratorio.
+            <p className="text-sm" style={{ color: COLORS.secondaryDark }}>
+              Su pago ya fue registrado, pero los resultados todavía no han sido finalizados por el laboratorio.
             </p>
           </div>
         </div>
       </div>
 
       <CardContent className="p-6">
-        <div className="rounded-xl border bg-slate-50 p-4 text-sm text-slate-700">
-          Cuando el personal técnico valide la orden, podrá consultar y
-          descargar el reporte oficial desde este mismo portal.
+        <div
+          className="rounded-xl border p-4 text-sm"
+          style={{
+            backgroundColor: COLORS.light,
+            borderColor: COLORS.border,
+            color: COLORS.dark,
+          }}
+        >
+          Cuando el personal técnico valide la orden, podrá consultar y descargar el reporte oficial desde este mismo portal.
         </div>
       </CardContent>
     </Card>
@@ -860,40 +1024,50 @@ export default function PatientPortalPage() {
   const renderResults = () => (
     <div className="space-y-4">
       {foundOrder.resultados.map((res: any) => (
-        <Card key={res.id} className="border-0 shadow-lg overflow-hidden">
-          <div className="bg-slate-50 px-6 py-3 border-b border-slate-100">
+        <Card key={res.id} className="overflow-hidden border-0 shadow-lg">
+          <div
+            className="border-b px-6 py-3"
+            style={{
+              backgroundColor: COLORS.light,
+              borderColor: COLORS.border,
+            }}
+          >
             <div className="flex items-center justify-between gap-4">
-              <h3 className="font-display font-bold text-primary flex items-center gap-2">
-                <FileText className="w-4 h-4" />
+              <h3
+                className="flex items-center gap-2 font-bold"
+                style={{ color: COLORS.primary }}
+              >
+                <FileText className="h-4 w-4" />
                 {res.pruebas?.name}
               </h3>
 
-              <span className="text-xs text-slate-400 font-medium">
+              <span className="text-xs font-medium" style={{ color: COLORS.textSoft }}>
                 {res.date ? `Fecha: ${formatDisplayDate(res.date)}` : ""}
               </span>
             </div>
           </div>
 
           <CardContent className="p-0">
-            <div className="divide-y divide-slate-50">
+            <div className="divide-y" style={{ borderColor: "#F1F5F9" }}>
               {res.resultado_detalle?.map((det: any) => {
                 const resultType = getResultType(det);
                 const displayValue = getDisplayValue(det);
                 const unit = getDisplayUnit(det);
                 const badgeLabel = getBadgeLabel(det);
+                const badgeStyle = getBadgeStyle(det);
 
                 return (
-                  <div
-                    key={det.id}
-                    className="p-5 hover:bg-slate-50/50 transition-colors"
-                  >
+                  <div key={det.id} className="p-5 transition-colors hover:bg-slate-50/50">
                     <div className="flex items-start justify-between gap-4">
-                      <div className="space-y-1 min-w-0 flex-1">
-                        <p className="font-bold text-slate-700 text-sm">
+                      <div className="min-w-0 flex-1 space-y-1">
+                        <p className="text-sm font-bold" style={{ color: COLORS.dark }}>
                           {det.parametros_prueba?.name}
                         </p>
 
-                        <div className="flex flex-wrap gap-2 text-[10px] text-slate-400 font-mono italic">
+                        <div
+                          className="flex flex-wrap gap-2 text-[10px] font-mono italic"
+                          style={{ color: COLORS.textSoft }}
+                        >
                           <span>Tipo: {resultType}</span>
 
                           {resultType === "numeric" && unit && (
@@ -902,32 +1076,49 @@ export default function PatientPortalPage() {
 
                           {resultType === "numeric" && hasRange(det) && (
                             <span>
-                              Rango ref: {det.applied_range_min} -{" "}
-                              {det.applied_range_max} {unit}
+                              Rango ref: {det.applied_range_min} - {det.applied_range_max} {unit}
                             </span>
                           )}
                         </div>
 
                         {det.observation && (
-                          <div className="mt-2 rounded-lg bg-amber-50 border border-amber-100 px-3 py-2">
-                            <p className="text-[11px] font-bold text-amber-700 uppercase tracking-wide">
+                          <div
+                            className="mt-2 rounded-lg border px-3 py-2"
+                            style={{
+                              backgroundColor: COLORS.warningBg,
+                              borderColor: "#FED7AA",
+                            }}
+                          >
+                            <p
+                              className="text-[11px] font-bold uppercase tracking-wide"
+                              style={{ color: COLORS.warningText }}
+                            >
                               Observación
                             </p>
-                            <p className="text-sm text-amber-900 whitespace-pre-line">
+                            <p
+                              className="whitespace-pre-line text-sm"
+                              style={{ color: COLORS.dark }}
+                            >
                               {det.observation}
                             </p>
                           </div>
                         )}
                       </div>
 
-                      <div className="flex items-center gap-4 shrink-0">
-                        <div className="text-right max-w-[180px]">
-                          <span className="text-lg font-black text-slate-800 break-words">
+                      <div className="flex shrink-0 items-center gap-4">
+                        <div className="max-w-[180px] text-right">
+                          <span
+                            className="break-words text-lg font-black"
+                            style={{ color: COLORS.dark }}
+                          >
                             {displayValue || "—"}
                           </span>
 
                           {!!unit && (
-                            <span className="text-[10px] font-bold text-slate-400 ml-1">
+                            <span
+                              className="ml-1 text-[10px] font-bold"
+                              style={{ color: COLORS.textSoft }}
+                            >
                               {unit}
                             </span>
                           )}
@@ -935,10 +1126,9 @@ export default function PatientPortalPage() {
 
                         {!!badgeLabel && (
                           <Badge
-                            className={`font-bold px-3 py-1 rounded-full text-[10px] ${getBadgeClass(
-                              det
-                            )}`}
+                            className="rounded-full px-3 py-1 text-[10px] font-bold"
                             variant="outline"
+                            style={badgeStyle}
                           >
                             {badgeLabel}
                           </Badge>
@@ -950,13 +1140,16 @@ export default function PatientPortalPage() {
               })}
 
               {!res.resultado_detalle?.length && res.notes && (
-                <div className="p-5 text-sm text-slate-700 whitespace-pre-line">
+                <div
+                  className="p-5 whitespace-pre-line text-sm"
+                  style={{ color: COLORS.dark }}
+                >
                   {res.notes}
                 </div>
               )}
 
               {!res.resultado_detalle?.length && !res.notes && (
-                <div className="p-5 text-sm text-slate-500">
+                <div className="p-5 text-sm" style={{ color: COLORS.textSoft }}>
                   No existen detalles cargados para este examen.
                 </div>
               )}
@@ -968,35 +1161,61 @@ export default function PatientPortalPage() {
   );
 
   return (
-    <div className="min-h-screen bg-slate-50 p-4 md:p-8">
-      <div className="max-w-2xl mx-auto space-y-8">
-        <div className="text-center space-y-4 py-6">
-          <div className="mx-auto w-24 h-24 rounded-3xl bg-white flex items-center justify-center shadow-xl shadow-blue-100 border border-slate-100 animate-in zoom-in duration-500 p-3 overflow-hidden">
+    <div
+      className="min-h-screen p-4 md:p-8"
+      style={{ backgroundColor: COLORS.light }}
+    >
+      <div className="mx-auto max-w-2xl space-y-8">
+        <div className="space-y-4 py-6 text-center">
+          <div
+            className="mx-auto flex h-24 w-24 items-center justify-center overflow-hidden rounded-3xl border bg-white p-3 shadow-xl"
+            style={{
+              borderColor: COLORS.border,
+              boxShadow: "0 10px 30px rgba(140,29,44,0.10)",
+            }}
+          >
             {labConfig.logo ? (
               <img
                 src={labConfig.logo}
                 alt={`Logo de ${labConfig.name}`}
-                className="max-w-full max-h-full object-contain"
+                className="max-h-full max-w-full object-contain"
               />
             ) : (
-              <div className="w-full h-full rounded-2xl gradient-clinical flex items-center justify-center">
-                <FlaskConical className="w-10 h-10 text-white" />
+              <div
+                className="flex h-full w-full items-center justify-center rounded-2xl"
+                style={{
+                  background: `linear-gradient(to right, ${COLORS.primary}, ${COLORS.secondaryDark})`,
+                }}
+              >
+                <FlaskConical className="h-10 w-10 text-white" />
               </div>
             )}
           </div>
 
           <div className="space-y-1">
-            <h1 className="text-3xl font-display font-black text-slate-800 tracking-tight">
+            <h1
+              className="text-3xl font-black tracking-tight"
+              style={{ color: COLORS.dark }}
+            >
               {labConfig.name}
             </h1>
-            <p className="text-slate-500 font-medium italic text-sm">
+            <p
+              className="text-sm font-medium italic"
+              style={{ color: COLORS.textSoft }}
+            >
               Portal de Resultados en Línea
             </p>
           </div>
 
           {confirmingPayment && (
-            <div className="inline-flex items-center gap-2 rounded-full border bg-white px-4 py-2 text-sm text-slate-600 shadow-sm">
-              <Loader2 className="w-4 h-4 animate-spin" />
+            <div
+              className="inline-flex items-center gap-2 rounded-full border bg-white px-4 py-2 text-sm shadow-sm"
+              style={{
+                color: COLORS.textSoft,
+                borderColor: COLORS.border,
+              }}
+            >
+              <Loader2 className="h-4 w-4 animate-spin" />
               Confirmando su pago...
             </div>
           )}
@@ -1015,17 +1234,25 @@ export default function PatientPortalPage() {
               renderProcessingResults()
             ) : (
               <>
-                <div className="rounded-xl border border-emerald-100 bg-emerald-50 px-4 py-3 text-sm text-emerald-800 flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4" />
-                  Pago confirmado. Ya puede consultar y descargar sus
-                  resultados.
+                <div
+                  className="flex items-center gap-2 rounded-xl border px-4 py-3 text-sm"
+                  style={{
+                    backgroundColor: COLORS.successBg,
+                    borderColor: "#A7F3D0",
+                    color: COLORS.successText,
+                  }}
+                >
+                  <CheckCircle2 className="h-4 w-4" />
+                  Pago confirmado. Ya puede consultar y descargar sus resultados.
                 </div>
 
                 {renderResults()}
 
-                <p className="text-center text-[10px] text-slate-400 pt-4">
-                  Este documento es una consulta informativa. Para fines legales
-                  o médicos, utilice el PDF firmado electrónicamente.
+                <p
+                  className="pt-4 text-center text-[10px]"
+                  style={{ color: COLORS.textSoft }}
+                >
+                  Este documento es una consulta informativa. Para fines legales o médicos, utilice el PDF firmado electrónicamente.
                 </p>
               </>
             )}
