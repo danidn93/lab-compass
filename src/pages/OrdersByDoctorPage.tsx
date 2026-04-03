@@ -10,6 +10,13 @@ import {
   AccordionItem,
   AccordionTrigger,
 } from '@/components/ui/accordion';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { toast } from 'sonner';
 
 function safeNumber(value: any, fallback = 0): number {
@@ -21,11 +28,46 @@ function round2(value: number): number {
   return Number(value.toFixed(2));
 }
 
+function getOrderDate(order: any): Date | null {
+  const raw = order?.date || order?.created_at;
+  if (!raw) return null;
+
+  const date = new Date(raw);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+function getOrderYear(order: any): string {
+  const d = getOrderDate(order);
+  return d ? String(d.getFullYear()) : 'Sin fecha';
+}
+
+function getOrderMonth(order: any): string {
+  const d = getOrderDate(order);
+  return d ? String(d.getMonth() + 1).padStart(2, '0') : 'Sin fecha';
+}
+
+const MONTHS = [
+  { value: '01', label: 'Enero' },
+  { value: '02', label: 'Febrero' },
+  { value: '03', label: 'Marzo' },
+  { value: '04', label: 'Abril' },
+  { value: '05', label: 'Mayo' },
+  { value: '06', label: 'Junio' },
+  { value: '07', label: 'Julio' },
+  { value: '08', label: 'Agosto' },
+  { value: '09', label: 'Septiembre' },
+  { value: '10', label: 'Octubre' },
+  { value: '11', label: 'Noviembre' },
+  { value: '12', label: 'Diciembre' },
+];
+
 export default function OrdersByDoctorPage() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [doctors, setDoctors] = useState<any[]>([]);
   const [orders, setOrders] = useState<any[]>([]);
+  const [selectedYear, setSelectedYear] = useState<string>('all');
+  const [selectedMonth, setSelectedMonth] = useState<string>('all');
 
   useEffect(() => {
     fetchData();
@@ -36,10 +78,7 @@ export default function OrdersByDoctorPage() {
       setLoading(true);
 
       const [doctorsRes, ordersRes] = await Promise.all([
-        supabase
-          .from('doctores')
-          .select('*')
-          .order('nombre'),
+        supabase.from('doctores').select('*').order('nombre'),
 
         supabase
           .from('ordenes')
@@ -63,16 +102,40 @@ export default function OrdersByDoctorPage() {
     }
   };
 
-  const ordersWithoutDoctor = useMemo(() => {
-    return orders.filter((o) => !o.doctor_id);
+  const availableYears = useMemo(() => {
+    const years = Array.from(
+      new Set(
+        orders
+          .map((order) => getOrderYear(order))
+          .filter((year) => year !== 'Sin fecha')
+      )
+    ).sort((a, b) => Number(b) - Number(a));
+
+    return years;
   }, [orders]);
+
+  const filteredOrders = useMemo(() => {
+    return orders.filter((order) => {
+      const year = getOrderYear(order);
+      const month = getOrderMonth(order);
+
+      const matchesYear = selectedYear === 'all' || year === selectedYear;
+      const matchesMonth = selectedMonth === 'all' || month === selectedMonth;
+
+      return matchesYear && matchesMonth;
+    });
+  }, [orders, selectedYear, selectedMonth]);
+
+  const ordersWithoutDoctor = useMemo(() => {
+    return filteredOrders.filter((o) => !o.doctor_id);
+  }, [filteredOrders]);
 
   const groupedDoctors = useMemo(() => {
     const q = search.trim().toLowerCase();
 
     return doctors
       .map((doctor) => {
-        const doctorOrders = orders.filter((o) => o.doctor_id === doctor.id);
+        const doctorOrders = filteredOrders.filter((o) => o.doctor_id === doctor.id);
 
         const totalOrdenes = doctorOrders.length;
         const totalFacturado = round2(
@@ -87,14 +150,13 @@ export default function OrdersByDoctorPage() {
         };
       })
       .filter((doctor) => {
-        if (!q) return true;
-
         const nombre = String(doctor.nombre || '').toLowerCase();
         const especialidad = String(doctor.especialidad || '').toLowerCase();
+        const matchesSearch = !q || nombre.includes(q) || especialidad.includes(q);
 
-        return nombre.includes(q) || especialidad.includes(q);
+        return matchesSearch;
       });
-  }, [doctors, orders, search]);
+  }, [doctors, filteredOrders, search]);
 
   if (loading) {
     return (
@@ -113,23 +175,62 @@ export default function OrdersByDoctorPage() {
         </p>
       </div>
 
-      <div className="relative max-w-sm">
-        <Search className="absolute left-3 top-3 w-4 h-4 text-muted-foreground" />
-        <Input
-          className="pl-10"
-          placeholder="Buscar médico..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
+      <div className="flex flex-col lg:flex-row gap-3 lg:items-end">
+        <div className="relative w-full lg:max-w-sm">
+          <Search className="absolute left-3 top-3 w-4 h-4 text-muted-foreground" />
+          <Input
+            className="pl-10"
+            placeholder="Buscar médico..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </div>
+
+        <div className="w-full sm:w-48">
+          <label className="text-sm font-medium mb-1 block">Año</label>
+          <Select value={selectedYear} onValueChange={setSelectedYear}>
+            <SelectTrigger>
+              <SelectValue placeholder="Todos los años" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todos los años</SelectItem>
+              {availableYears.map((year) => (
+                <SelectItem key={year} value={year}>
+                  {year}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        <div className="w-full sm:w-48">
+          <label className="text-sm font-medium mb-1 block">Mes</label>
+          <Select value={selectedMonth} onValueChange={setSelectedMonth}>
+            <SelectTrigger>
+              <SelectValue placeholder="Todos los meses" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Todos los meses</SelectItem>
+              {MONTHS.map((month) => (
+                <SelectItem key={month.value} value={month.value}>
+                  {month.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
       {ordersWithoutDoctor.length > 0 && (
         <Card>
           <CardContent className="p-4">
             <div className="rounded-2xl border border-amber-200 bg-amber-50 p-4">
-              <div className="font-semibold text-amber-800">Órdenes sin médico asignado</div>
+              <div className="font-semibold text-amber-800">
+                Órdenes sin médico asignado
+              </div>
               <div className="text-sm text-amber-700 mt-1">
-                Existen {ordersWithoutDoctor.length} órdenes registradas sin médico.
+                Existen {ordersWithoutDoctor.length} órdenes registradas sin médico
+                en el filtro seleccionado.
               </div>
             </div>
           </CardContent>
@@ -168,9 +269,7 @@ export default function OrdersByDoctorPage() {
                         <Badge variant="outline">
                           {doctor.totalOrdenes} órdenes
                         </Badge>
-                        <Badge>
-                          ${doctor.totalFacturado.toFixed(2)}
-                        </Badge>
+                        <Badge>${doctor.totalFacturado.toFixed(2)}</Badge>
                       </div>
                     </div>
                   </AccordionTrigger>
@@ -178,7 +277,7 @@ export default function OrdersByDoctorPage() {
                   <AccordionContent>
                     {doctor.doctorOrders.length === 0 ? (
                       <div className="py-3 text-sm text-muted-foreground">
-                        Este médico aún no tiene órdenes registradas.
+                        Este médico no tiene órdenes en el período seleccionado.
                       </div>
                     ) : (
                       <div className="space-y-3 pt-2">
@@ -202,7 +301,7 @@ export default function OrdersByDoctorPage() {
                                     Paciente: {order.pacientes?.name || '—'}
                                   </div>
                                   <div className="text-sm text-muted-foreground">
-                                    Fecha: {order.date || '—'}
+                                    Fecha: {order.date || order.created_at || '—'}
                                   </div>
                                 </div>
 

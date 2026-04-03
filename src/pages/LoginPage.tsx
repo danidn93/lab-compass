@@ -182,16 +182,26 @@ export default function LoginPage() {
           return;
         }
 
+        if (!tempUser.two_factor_secret) {
+          setErrorMsg('No existe secreto 2FA para este usuario');
+          setLoading(false);
+          return;
+        }
+
+        const cleanOtp = otpCode.trim();
+
+        const secret = OTPAuth.Secret.fromBase32(tempUser.two_factor_secret);
+
         const totp = new OTPAuth.TOTP({
           issuer: labConfig?.name || 'BioAnalítica',
           label: tempUser.username,
           algorithm: 'SHA1',
           digits: 6,
           period: 30,
-          secret: tempUser.two_factor_secret || '',
+          secret,
         });
 
-        const delta = totp.validate({ token: otpCode, window: 1 });
+        const delta = totp.validate({ token: cleanOtp, window: 1 });
 
         if (delta === null) {
           await registrarLogAcceso(tempUser.id, 'OTP_FALLIDO', {
@@ -315,6 +325,7 @@ export default function LoginPage() {
     setIsFirstTime(false);
     setTempUser(null);
     setPassword('');
+    setErrorMsg('');
   };
 
   return (

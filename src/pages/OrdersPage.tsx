@@ -86,6 +86,22 @@ type BillingFormType = {
   email: string;
 };
 
+type DoctorForm = {
+  nombre: string;
+  especialidad: string;
+  telefono: string;
+  email: string;
+  activo: boolean;
+};
+
+const initialDoctorForm: DoctorForm = {
+  nombre: '',
+  especialidad: '',
+  telefono: '',
+  email: '',
+  activo: true,
+};
+
 function normalizeBillingIdType(value: any): BillingIdType {
   if (
     value === 'CEDULA' ||
@@ -121,12 +137,14 @@ export default function OrdersPage() {
   const [savingPayment, setSavingPayment] = useState(false);
   const [generatingRide, setGeneratingRide] = useState<string | null>(null);
   const [billingLookupLoading, setBillingLookupLoading] = useState(false);
+  const [savingDoctor, setSavingDoctor] = useState(false);
 
   const [search, setSearch] = useState('');
   const [dialogOpen, setDialogOpen] = useState(false);
   const [invoiceDialogOpen, setInvoiceDialogOpen] = useState(false);
   const [patientDialogOpen, setPatientDialogOpen] = useState(false);
   const [paymentDialogOpen, setPaymentDialogOpen] = useState(false);
+  const [doctorDialogOpen, setDoctorDialogOpen] = useState(false);
 
   const [selectedOrder, setSelectedOrder] = useState<any>(null);
   const [paymentOrder, setPaymentOrder] = useState<any>(null);
@@ -158,6 +176,8 @@ export default function OrdersPage() {
     sex: 'M' as 'M' | 'F',
     direccion: '',
   });
+
+  const [doctorForm, setDoctorForm] = useState<DoctorForm>(initialDoctorForm);
 
   const [paymentForm, setPaymentForm] = useState<PaymentFormType>({
     amount: '',
@@ -204,6 +224,19 @@ export default function OrdersPage() {
       }
     }
   }, [billingMode, selectedPatient, patients]);
+
+  const fetchDoctors = async () => {
+    const { data, error } = await supabase
+      .from('doctores')
+      .select('*')
+      .eq('activo', true)
+      .order('nombre');
+
+    if (error) throw error;
+
+    setDoctors(data || []);
+    return data || [];
+  };
 
   const fetchInitialData = async () => {
     try {
@@ -370,6 +403,11 @@ export default function OrdersPage() {
     setPatientDialogOpen(true);
   };
 
+  const openCreateDoctor = () => {
+    setDoctorForm(initialDoctorForm);
+    setDoctorDialogOpen(true);
+  };
+
   const resetBillingSection = () => {
     setBillingMode('PACIENTE');
     setBillingCustomerId(null);
@@ -440,6 +478,48 @@ export default function OrdersPage() {
       );
     } finally {
       setCreatingPatient(false);
+    }
+  };
+
+  const handleSaveDoctor = async () => {
+    if (!doctorForm.nombre.trim()) {
+      toast.error('El nombre del médico es obligatorio');
+      return;
+    }
+
+    try {
+      setSavingDoctor(true);
+
+      const payload = {
+        nombre: doctorForm.nombre.trim(),
+        especialidad: doctorForm.especialidad.trim() || null,
+        telefono: doctorForm.telefono.trim() || null,
+        email: doctorForm.email.trim() || null,
+        activo: doctorForm.activo,
+      };
+
+      const { data, error } = await supabase
+        .from('doctores')
+        .insert([payload])
+        .select()
+        .single();
+
+      if (error) throw error;
+
+      toast.success('Médico registrado');
+
+      await fetchDoctors();
+
+      if (data?.id) {
+        setSelectedDoctor(data.id);
+      }
+
+      setDoctorDialogOpen(false);
+      setDoctorForm(initialDoctorForm);
+    } catch (error: any) {
+      toast.error('Error al guardar médico: ' + error.message);
+    } finally {
+      setSavingDoctor(false);
     }
   };
 
@@ -1292,16 +1372,22 @@ export default function OrdersPage() {
 
   const filtered = orders.filter((o) => {
     const q = search.toLowerCase();
+    const total = safeNumber(o.total, 0);
+    const pagado = safeNumber(o.paid_amount, 0);
+    const saldo = round2(Math.max(total - pagado, 0));
 
-    return (
+    const noEstaPagada = o.payment_status !== 'PAGADO' && saldo > 0;
+
+    const matchesSearch =
       o.code?.toLowerCase().includes(q) ||
       o.pacientes?.name?.toLowerCase().includes(q) ||
       o.doctores?.nombre?.toLowerCase().includes(q) ||
       o.numero_factura?.toLowerCase().includes(q) ||
       o.clave_acceso_sri?.toLowerCase().includes(q) ||
       o.factura_nombres?.toLowerCase().includes(q) ||
-      o.factura_identificacion?.toLowerCase().includes(q)
-    );
+      o.factura_identificacion?.toLowerCase().includes(q);
+
+    return noEstaPagada && matchesSearch;
   });
 
   if (loading) {
@@ -1836,9 +1922,22 @@ export default function OrdersPage() {
               </div>
 
               <div className="space-y-3">
-                <Label className="text-xs font-bold uppercase tracking-wide text-slate-700">
-                  Médico solicitante (opcional)
-                </Label>
+                <div className="flex items-center justify-between gap-3">
+                  <Label className="text-xs font-bold uppercase tracking-wide text-slate-700">
+                    Médico solicitante (opcional)
+                  </Label>
+
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="rounded-xl"
+                    onClick={openCreateDoctor}
+                  >
+                    <Plus className="w-4 h-4 mr-2" />
+                    Nuevo médico
+                  </Button>
+                </div>
 
                 <Select
                   value={selectedDoctor || '__none__'}
@@ -1984,7 +2083,7 @@ export default function OrdersPage() {
                     Generando...
                   </>
                 ) : (
-                  'Confirmar, Facturar y Generar Ticket'
+                  'Generar Orden'
                 )}
               </Button>
             </div>
@@ -2103,6 +2202,80 @@ export default function OrdersPage() {
                 </>
               ) : (
                 'Registrar Paciente'
+              )}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={doctorDialogOpen} onOpenChange={setDoctorDialogOpen}>
+        <DialogContent className="sm:max-w-[560px]">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl">
+              Nuevo médico
+            </DialogTitle>
+          </DialogHeader>
+
+          <div className="space-y-4 pt-4">
+            <div className="space-y-2">
+              <Label className="font-semibold text-xs uppercase tracking-wider">
+                Nombre completo *
+              </Label>
+              <Input
+                value={doctorForm.nombre}
+                onChange={(e) => setDoctorForm((f) => ({ ...f, nombre: e.target.value }))}
+                placeholder="Nombre del médico"
+              />
+            </div>
+
+            <div className="space-y-2">
+              <Label className="font-semibold text-xs uppercase tracking-wider">
+                Especialidad
+              </Label>
+              <Input
+                value={doctorForm.especialidad}
+                onChange={(e) => setDoctorForm((f) => ({ ...f, especialidad: e.target.value }))}
+                placeholder="Especialidad"
+              />
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-2">
+                <Label className="font-semibold text-xs uppercase tracking-wider">
+                  Teléfono
+                </Label>
+                <Input
+                  value={doctorForm.telefono}
+                  onChange={(e) => setDoctorForm((f) => ({ ...f, telefono: e.target.value }))}
+                  placeholder="0999999999"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label className="font-semibold text-xs uppercase tracking-wider">
+                  Correo
+                </Label>
+                <Input
+                  type="email"
+                  value={doctorForm.email}
+                  onChange={(e) => setDoctorForm((f) => ({ ...f, email: e.target.value }))}
+                  placeholder="doctor@correo.com"
+                />
+              </div>
+            </div>
+
+            <Button
+              onClick={handleSaveDoctor}
+              className="w-full gradient-clinical text-primary-foreground border-0 h-11"
+              disabled={savingDoctor}
+            >
+              {savingDoctor ? (
+                <>
+                  <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                  Guardando...
+                </>
+              ) : (
+                'Registrar médico'
               )}
             </Button>
           </div>

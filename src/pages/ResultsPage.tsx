@@ -133,6 +133,20 @@ export default function ResultsPage() {
     return round2(Math.max(total - paid, 0));
   };
 
+  const isWithinLastWeek = (dateValue: string) => {
+    if (!dateValue) return false;
+
+    const orderDate = new Date(dateValue);
+    if (Number.isNaN(orderDate.getTime())) return false;
+
+    const now = new Date();
+    const sevenDaysAgo = new Date();
+    sevenDaysAgo.setHours(0, 0, 0, 0);
+    sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+
+    return orderDate >= sevenDaysAgo;
+  };
+
   const openEntry = async (order: any) => {
     try {
       setSelectedOrderId(order.id);
@@ -563,13 +577,24 @@ export default function ResultsPage() {
     }
   };
 
+  const hasSearch = search.trim() !== '';
+
   const pendingOrders = useMemo(
-    () => orders.filter(o => o.status !== 'completed' && matchesSearch(o)),
+    () => orders.filter((o) => o.status !== 'completed' && matchesSearch(o)),
     [orders, search]
   );
 
   const completedOrders = useMemo(
-    () => orders.filter(o => o.status === 'completed' && matchesSearch(o)),
+    () =>
+      orders.filter((o) => {
+        if (o.status !== 'completed') return false;
+
+        if (hasSearch) {
+          return matchesSearch(o);
+        }
+
+        return isWithinLastWeek(o.created_at);
+      }),
     [orders, search]
   );
 
