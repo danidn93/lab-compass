@@ -1194,12 +1194,7 @@ export default function SettingsPage() {
                   Procesar Certificado
                 </Button>
               </div>
-
-              {feConfig.certificado_storage_path && (
-                <div className="text-xs text-muted-foreground break-all">
-                  Ruta almacenada: {feConfig.certificado_storage_path}
-                </div>
-              )}
+              
             </div>
           </div>
 
@@ -1225,53 +1220,7 @@ export default function SettingsPage() {
                 readOnly
               />
             </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="space-y-2">
-              <Label className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                Thumbprint
-              </Label>
-              <Input
-                value={feConfig.certificado_thumbprint}
-                readOnly
-                placeholder="Se llena automáticamente"
-              />
-            </div>
-
-            <div className="space-y-2">
-              <Label className="text-xs font-bold uppercase tracking-wider text-slate-500">
-                Serial
-              </Label>
-              <Input
-                value={feConfig.certificado_serial}
-                readOnly
-                placeholder="Se llena automáticamente"
-              />
-            </div>
-          </div>
-
-          <div className="space-y-2">
-            <Label className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              Issuer
-            </Label>
-            <Input
-              value={feConfig.certificado_issuer}
-              readOnly
-              placeholder="Se llena automáticamente"
-            />
-          </div>
-
-          <div className="space-y-2">
-            <Label className="text-xs font-bold uppercase tracking-wider text-slate-500">
-              Subject
-            </Label>
-            <Input
-              value={feConfig.certificado_subject}
-              readOnly
-              placeholder="Se llena automáticamente"
-            />
-          </div>
+          </div>          
 
           <div
             className={[
