@@ -31,6 +31,8 @@ interface ParameterForm {
   bool_false_label: string;
   allow_observation: boolean;
   sort_order: string;
+  default_value: string;
+  default_boolean: '' | 'true' | 'false';
   ranges: RangeForm[];
 }
 
@@ -57,6 +59,8 @@ const emptyParam = (): ParameterForm => ({
   bool_false_label: 'Negativo',
   allow_observation: false,
   sort_order: '0',
+  default_value: '',
+  default_boolean: '',
   ranges: [emptyRange()],
 });
 
@@ -173,6 +177,13 @@ export default function TestsPage() {
       bool_false_label: p.bool_false_label || 'Negativo',
       allow_observation: !!p.allow_observation,
       sort_order: String(p.sort_order ?? index),
+      default_value: p.valor_default || '',
+      default_boolean:
+        p.valor_default_boolean === true
+          ? 'true'
+          : p.valor_default_boolean === false
+          ? 'false'
+          : '',
       ranges:
         p.result_type === 'numeric'
           ? (p.ranges?.length ? p.ranges : [emptyRange()]).map((r: any) => ({
@@ -276,6 +287,15 @@ export default function TestsPage() {
             result_type: p.result_type,
             bool_true_label: p.result_type === 'boolean' ? p.bool_true_label.trim() || 'Positivo' : null,
             bool_false_label: p.result_type === 'boolean' ? p.bool_false_label.trim() || 'Negativo' : null,
+            valor_default: p.result_type === 'text' ? (p.default_value.trim() || null) : null,
+            valor_default_boolean:
+              p.result_type === 'boolean'
+                ? p.default_boolean === 'true'
+                  ? true
+                  : p.default_boolean === 'false'
+                  ? false
+                  : null
+                : null,
             allow_observation: !!p.allow_observation,
             sort_order: Number(p.sort_order || 0),
           })
@@ -352,6 +372,8 @@ export default function TestsPage() {
         if (field === 'result_type') {
           if (value === 'numeric') {
             updated.ranges = p.ranges.length ? p.ranges : [emptyRange()];
+            updated.default_value = '';
+            updated.default_boolean = '';
           } else {
             updated.unit = '';
             updated.ranges = [];
@@ -360,6 +382,13 @@ export default function TestsPage() {
           if (value === 'boolean') {
             updated.bool_true_label = p.bool_true_label || 'Positivo';
             updated.bool_false_label = p.bool_false_label || 'Negativo';
+            updated.default_value = '';
+            updated.default_boolean = p.default_boolean || '';
+          }
+
+          if (value === 'text') {
+            updated.default_value = p.default_value || '';
+            updated.default_boolean = '';
           }
         }
 
@@ -561,14 +590,32 @@ export default function TestsPage() {
                     )}
 
                     {param.result_type === 'boolean' && (
-                      <div className="mt-2 flex gap-2">
-                        <Badge variant="outline">{param.bool_true_label || 'Positivo'}</Badge>
-                        <Badge variant="outline">{param.bool_false_label || 'Negativo'}</Badge>
+                      <div className="mt-2 space-y-2">
+                        <div className="flex gap-2">
+                          <Badge variant="outline">{param.bool_true_label || 'Positivo'}</Badge>
+                          <Badge variant="outline">{param.bool_false_label || 'Negativo'}</Badge>
+                        </div>
+
+                        {param.valor_default_boolean !== null && param.valor_default_boolean !== undefined && (
+                          <p className="text-xs text-slate-700 bg-white p-2 rounded border">
+                            <span className="font-semibold">Valor por defecto:</span>{' '}
+                            {param.valor_default_boolean
+                              ? param.bool_true_label || 'Positivo'
+                              : param.bool_false_label || 'Negativo'}
+                          </p>
+                        )}
                       </div>
                     )}
-
+                  
                     {param.result_type === 'text' && (
-                      <p className="text-xs text-slate-500 mt-2">Valor textual libre</p>
+                      <div className="mt-2 space-y-1">
+                        <p className="text-xs text-slate-500">Valor textual libre</p>
+                        {param.valor_default && (
+                          <p className="text-xs text-slate-700 bg-white p-2 rounded border">
+                            <span className="font-semibold">Valor por defecto:</span> {param.valor_default}
+                          </p>
+                        )}
+                      </div>
                     )}
 
                     {param.allow_observation && (
@@ -756,8 +803,19 @@ export default function TestsPage() {
                           </div>
                         </div>
 
+                        {param.result_type === 'text' && (
+                          <div className="mb-4">
+                            <Label className="text-xs font-semibold">Valor por defecto</Label>
+                            <Input
+                              value={param.default_value}
+                              onChange={e => updateParam(pIdx, 'default_value', e.target.value)}
+                              placeholder="Ej: No se observan alteraciones"
+                            />
+                          </div>
+                        )}
+
                         {param.result_type === 'boolean' && (
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
                             <div>
                               <Label className="text-xs font-semibold">Etiqueta verdadero</Label>
                               <Input
@@ -766,6 +824,7 @@ export default function TestsPage() {
                                 placeholder="Ej: Positivo / Sí / Presencia"
                               />
                             </div>
+
                             <div>
                               <Label className="text-xs font-semibold">Etiqueta falso</Label>
                               <Input
@@ -773,6 +832,33 @@ export default function TestsPage() {
                                 onChange={e => updateParam(pIdx, 'bool_false_label', e.target.value)}
                                 placeholder="Ej: Negativo / No / Ausencia"
                               />
+                            </div>
+
+                            <div>
+                              <Label className="text-xs font-semibold">Valor por defecto</Label>
+                              <Select
+                                value={param.default_boolean || 'none'}
+                                onValueChange={value =>
+                                  updateParam(
+                                    pIdx,
+                                    'default_boolean',
+                                    value === 'none' ? '' : (value as '' | 'true' | 'false')
+                                  )
+                                }
+                              >
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Sin valor por defecto" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  <SelectItem value="none">Sin valor por defecto</SelectItem>
+                                  <SelectItem value="true">
+                                    {param.bool_true_label || 'Positivo'}
+                                  </SelectItem>
+                                  <SelectItem value="false">
+                                    {param.bool_false_label || 'Negativo'}
+                                  </SelectItem>
+                                </SelectContent>
+                              </Select>
                             </div>
                           </div>
                         )}

@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
+import { sendDocumentEmail } from '@/lib/sendDocumentEmail';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import {
@@ -16,6 +17,7 @@ import {
   Search,
   ChevronDown,
   ChevronUp,
+  MessageCircle,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Textarea } from '@/components/ui/textarea';
@@ -28,6 +30,7 @@ import {
 } from '@/components/ui/select';
 import {
   generateResultsPDF,
+  downloadBlob,
   PdfLabConfig,
   PdfOrder,
   PdfOrderResult,
@@ -51,6 +54,26 @@ function emptyEntryValue(): EntryValueItem {
     value_text: '',
     observation: '',
   };
+}
+
+function safeFileNamePart(value: any): string {
+  return String(value ?? '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 80);
+}
+
+function normalizePhoneForWhatsapp(phone: any): string {
+  let digits = String(phone ?? '').replace(/\D/g, '');
+
+  if (!digits) return '';
+
+  if (digits.startsWith('593')) return digits;
+  if (digits.length === 10 && digits.startsWith('0')) return `593${digits.slice(1)}`;
+  if (digits.length === 9) return `593${digits}`;
+  return digits;
 }
 
 function safeNumber(value: any, fallback = 0): number {
@@ -169,6 +192,8 @@ export default function ResultsPage() {
               bool_false_label,
               allow_observation,
               sort_order,
+              valor_default,
+              valor_default_boolean,
               rangos_referencia (*)
             )
           )
@@ -187,7 +212,23 @@ export default function ResultsPage() {
       const initialValues: Record<string, EntryValueItem> = {};
       normalizedTests.forEach((test: any) => {
         (test.parametros_prueba || []).forEach((param: any) => {
-          initialValues[param.id] = emptyEntryValue();
+          const resultType: ResultType = param.result_type || 'numeric';
+
+          initialValues[param.id] = {
+            ...emptyEntryValue(),
+            value_text:
+              resultType === 'text'
+                ? String(param.valor_default || '')
+                : '',
+            value_boolean:
+              resultType === 'boolean'
+                ? param.valor_default_boolean === true
+                  ? 'true'
+                  : param.valor_default_boolean === false
+                  ? 'false'
+                  : ''
+                : '',
+          };
         });
       });
 
@@ -310,6 +351,274 @@ export default function ResultsPage() {
     return true;
   };
 
+    const buildPdfPayloadFromOrderData = (configData: any, orderData: any) => {
+    const pdfConfig: PdfLabConfig = {
+      name: configData.name || 'LABORATORIO CLÍNICO',
+      owner: configData.owner || '',
+      address: configData.address || '',
+      ruc: configData.ruc || '',
+      healthRegistry: configData.health_registry || '',
+      phone: configData.phone || '',
+      schedule: configData.schedule || '',
+      logo: configData.logo || '',
+      firma: configData.firma || '',
+      sello: configData.sello || '',
+    };
+
+    const pdfPatient: PdfPatient = {
+      name: orderData.pacientes?.name || '',
+      cedula: orderData.pacientes?.cedula || '',
+      phone: orderData.pacientes?.phone || '',
+      sex: orderData.pacientes?.sex === 'F' ? 'F' : 'M',
+      birth_date: orderData.pacientes?.birth_date || null,
+    };
+
+    const firstResultDate =
+      orderData.resultados?.map((r: any) => r.date).filter(Boolean)?.[0] ||
+      orderData.created_at ||
+      null;
+
+    const pdfOrder: PdfOrder = {
+      code: orderData.code || '',
+      accessKey: orderData.access_key || '',
+      date: firstResultDate || orderData.created_at || '',
+      created_at: firstResultDate || orderData.created_at || null,
+    };
+
+    const orderTests =
+      orderData.resultados?.map((res: any) => ({
+        id: res.pruebas?.id || res.test_id || res.id,
+        name: res.pruebas?.name || 'Examen',
+      })) || [];
+
+    const orderResults: PdfOrderResult[] =
+      orderData.resultados?.map((res: any) => ({
+        id: res.id,
+        testId: res.pruebas?.id || res.test_id || res.id,
+        testName: res.pruebas?.name || 'Examen',
+        notes: res.notes || res.observacion || res.resultado_texto || '',
+        date: res.date || null,
+        details:
+          res.resultado_detalle?.map((det: any) => ({
+            id: det.id,
+            parameterId: det.parametros_prueba?.id || det.parameter_id || null,
+            parameterName:
+              det.parametros_prueba?.name || det.name || det.parametro || 'Resultado',
+            value: getDisplayValue(det),
+            appliedRangeMin: det.applied_range_min ?? null,
+            appliedRangeMax: det.applied_range_max ?? null,
+            unit: getDisplayUnit(det),
+            status: det.status || 'normal',
+            observation: det.observation || '',
+            resultType: getResultType(det),
+          })) || [],
+      })) || [];
+
+    return { pdfConfig, pdfPatient, pdfOrder, orderTests, orderResults };
+  };
+
+  const generateAndUploadResultsPdf = async (orderId: string) => {
+    const [{ data: configData, error: configError }, { data: orderData, error: orderError }] =
+      await Promise.all([
+        supabase.from('configuracion_laboratorio').select('*').maybeSingle(),
+        supabase
+          .from('ordenes')
+          .select(`
+            *,
+            pacientes (*),
+            resultados (
+              *,
+              resultado_detalle (
+                *,
+                parametros_prueba (
+                  *,
+                  rangos_referencia (*)
+                )
+              ),
+              pruebas (*)
+            )
+          `)
+          .eq('id', orderId)
+          .maybeSingle(),
+      ]);
+
+    if (configError) throw configError;
+    if (orderError) throw orderError;
+    if (!configData) throw new Error('No existe la configuración del laboratorio');
+    if (!orderData) throw new Error('No se encontró la orden');
+    if (!orderData.resultados?.length) throw new Error('La orden no tiene resultados registrados');
+
+    const { pdfConfig, pdfPatient, pdfOrder, orderTests, orderResults } =
+      buildPdfPayloadFromOrderData(configData, orderData);
+
+    const blob = generateResultsPDF(pdfOrder, pdfPatient, orderTests, orderResults, pdfConfig, {
+      autoDownload: false,
+    });
+
+    const safeCode = safeFileNamePart(orderData.code || orderId);
+    const safePatient = safeFileNamePart(orderData.pacientes?.name || 'paciente');
+    const filePath = `ordenes/${orderId}/resultados_${safeCode}_${safePatient}.pdf`;
+
+    const { error: uploadError } = await supabase.storage
+      .from('resultados')
+      .upload(filePath, blob, {
+        upsert: true,
+        contentType: 'application/pdf',
+      });
+
+    if (uploadError) throw uploadError;
+
+    const { data: publicUrlData } = supabase.storage.from('resultados').getPublicUrl(filePath);
+    const publicUrl = publicUrlData?.publicUrl;
+
+    if (!publicUrl) {
+      throw new Error('No se pudo obtener la URL pública del PDF');
+    }
+
+    const resultIds = (orderData.resultados || []).map((r: any) => r.id).filter(Boolean);
+
+    if (!resultIds.length) {
+      throw new Error('No se encontraron filas de resultados para actualizar la URL');
+    }
+
+    const { error: updateUrlError } = await supabase
+      .from('resultados')
+      .update({ resultados_url: publicUrl })
+      .in('id', resultIds);
+
+    if (updateUrlError) throw updateUrlError;
+
+    return publicUrl;
+  };
+
+  const getExistingResultsUrl = async (orderId: string) => {
+    const { data, error } = await supabase
+      .from('resultados')
+      .select('resultados_url')
+      .eq('order_id', orderId)
+      .not('resultados_url', 'is', null)
+      .limit(1);
+
+    if (error) throw error;
+    return data?.[0]?.resultados_url || null;
+  };
+
+  const downloadPdfFromUrl = async (url: string, orderCode: string) => {
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error('No se pudo descargar el PDF almacenado');
+    }
+
+    const blob = await response.blob();
+    downloadBlob(blob, `resultados_${orderCode}.pdf`);
+  };
+
+  const handleSendResultsWhatsapp = async (order: any) => {
+    try {
+      const paid = isOrderPaid(order);
+      const saldo = getPendingBalance(order);
+
+      if (!paid) {
+        toast.error(
+          `No se puede enviar el PDF porque la orden aún tiene un saldo pendiente de $${saldo.toFixed(2)}`
+        );
+        return;
+      }
+
+      const phone = normalizePhoneForWhatsapp(order?.pacientes?.phone);
+      if (!phone) {
+        toast.error('El paciente no tiene un número de teléfono válido');
+        return;
+      }
+
+      let url = await getExistingResultsUrl(order.id);
+
+      if (!url) {
+        toast.info('No existía PDF almacenado. Se generará y guardará ahora...');
+        url = await generateAndUploadResultsPdf(order.id);
+      }
+
+      const message =
+        `Hola ${order?.pacientes?.name || ''}, compartimos su PDF de resultados de laboratorio.\n\n` +
+        `Orden: ${order?.code || ''}\n` +
+        `Documento: ${url}`;
+
+      const waUrl = `https://wa.me/${phone}?text=${encodeURIComponent(message)}`;
+      window.open(waUrl, '_blank');
+
+      toast.success('Enlace preparado para WhatsApp');
+    } catch (error: any) {
+      toast.error('No se pudo preparar WhatsApp: ' + (error?.message || 'desconocido'));
+    }
+  };
+
+  const sendResultsEmailIfEligible = async (orderId: string) => {
+    const { data: orderData, error } = await supabase
+      .from('ordenes')
+      .select(`
+        id,
+        code,
+        total,
+        paid_amount,
+        pacientes (
+          name,
+          email
+        ),
+        resultados (
+          id,
+          resultados_url
+        )
+      `)
+      .eq('id', orderId)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!orderData) throw new Error('No se encontró la orden');
+
+    const total = round2(safeNumber(orderData.total, 0));
+    const paid = round2(safeNumber(orderData.paid_amount, 0));
+    const saldo = round2(Math.max(total - paid, 0));
+
+    if (saldo > 0) {
+      return {
+        sent: false,
+        reason: `La orden aún tiene saldo pendiente de $${saldo.toFixed(2)}`,
+      };
+    }
+
+    const email = String(orderData.pacientes?.email || '').trim();
+    if (!email) {
+      return {
+        sent: false,
+        reason: 'El paciente no tiene correo registrado',
+      };
+    }
+
+    const pdfUrl =
+      orderData.resultados?.find((r: any) => !!r.resultados_url)?.resultados_url || null;
+
+    if (!pdfUrl) {
+      return {
+        sent: false,
+        reason: 'No existe una URL registrada del PDF de resultados',
+      };
+    }
+
+    await sendDocumentEmail({
+      to: email,
+      documentType: 'resultados',
+      orderCode: orderData.code,
+      patientName: orderData.pacientes?.name || '',
+      pdfUrl,
+      filename: `resultados_${orderData.code}.pdf`,
+    });
+
+    return {
+      sent: true,
+      reason: '',
+    };
+  };
+  
   const handleSaveResults = async () => {
     if (!validateEntries()) return;
 
@@ -333,7 +642,10 @@ export default function ResultsPage() {
 
           const { error: updateResultError } = await supabase
             .from('resultados')
-            .update({ date: resultDate })
+            .update({
+              date: resultDate,
+              resultados_url: null,
+            })
             .eq('id', resultId);
 
           if (updateResultError) throw updateResultError;
@@ -352,6 +664,7 @@ export default function ResultsPage() {
                 order_id: selectedOrderId,
                 test_id: test.id,
                 date: resultDate,
+                resultados_url: null,
               },
             ])
             .select()
@@ -418,12 +731,25 @@ export default function ResultsPage() {
 
       if (updateOrderError) throw updateOrderError;
 
-      toast.success('Resultados guardados exitosamente');
+      await generateAndUploadResultsPdf(selectedOrderId!);
+
+      const emailResult = await sendResultsEmailIfEligible(selectedOrderId!);
+
+      if (emailResult.sent) {
+        toast.success('Resultados guardados, PDF generado y correo enviado exitosamente');
+      } else {
+        toast.success('Resultados guardados y PDF generado exitosamente');
+
+        if (emailResult.reason) {
+          toast.info(`No se envió el correo: ${emailResult.reason}`);
+        }
+      }
+
       setEntryDialogOpen(false);
       setOrderDetails(null);
       setSelectedOrderId(null);
       setEntryValues({});
-      fetchOrders();
+      await fetchOrders();
     } catch (error: any) {
       toast.error('Error al guardar: ' + error.message);
     } finally {
@@ -464,37 +790,25 @@ export default function ResultsPage() {
   const handleDownloadResultPdf = async (orderId: string) => {
     try {
       setDownloadingOrderId(orderId);
-      toast.info('Generando PDF de resultados...');
+      toast.info('Preparando PDF de resultados...');
 
-      const [{ data: configData, error: configError }, { data: orderData, error: orderError }] =
-        await Promise.all([
-          supabase.from('configuracion_laboratorio').select('*').maybeSingle(),
-          supabase
-            .from('ordenes')
-            .select(`
-              *,
-              pacientes (*),
-              resultados (
-                *,
-                resultado_detalle (
-                  *,
-                  parametros_prueba (
-                    *,
-                    rangos_referencia (*)
-                  )
-                ),
-                pruebas (*)
-              )
-            `)
-            .eq('id', orderId)
-            .maybeSingle(),
-        ]);
+      const { data: orderData, error: orderError } = await supabase
+        .from('ordenes')
+        .select(`
+          id,
+          code,
+          total,
+          paid_amount,
+          resultados (
+            id,
+            resultados_url
+          )
+        `)
+        .eq('id', orderId)
+        .maybeSingle();
 
-      if (configError) throw configError;
       if (orderError) throw orderError;
-      if (!configData) throw new Error('No existe la configuración del laboratorio');
       if (!orderData) throw new Error('No se encontró la orden');
-      if (!orderData.resultados?.length) throw new Error('La orden no tiene resultados registrados');
 
       const total = round2(safeNumber(orderData.total, 0));
       const paid = round2(safeNumber(orderData.paid_amount, 0));
@@ -502,76 +816,22 @@ export default function ResultsPage() {
 
       if (paid < total) {
         throw new Error(
-          `No se puede generar el PDF porque la orden aún no está pagada en su totalidad. Saldo pendiente: $${saldo.toFixed(2)}`
+          `No se puede descargar el PDF porque la orden aún no está pagada en su totalidad. Saldo pendiente: $${saldo.toFixed(2)}`
         );
       }
 
-      const pdfConfig: PdfLabConfig = {
-        name: configData.name || 'LABORATORIO CLÍNICO',
-        owner: configData.owner || '',
-        address: configData.address || '',
-        ruc: configData.ruc || '',
-        healthRegistry: configData.health_registry || '',
-        phone: configData.phone || '',
-        schedule: configData.schedule || '',
-        logo: configData.logo || '',
-        firma: configData.firma || '',
-        sello: configData.sello || '',
-      };
+      let pdfUrl =
+        orderData.resultados?.find((r: any) => !!r.resultados_url)?.resultados_url || null;
 
-      const pdfPatient: PdfPatient = {
-        name: orderData.pacientes?.name || '',
-        cedula: orderData.pacientes?.cedula || '',
-        phone: orderData.pacientes?.phone || '',
-        sex: orderData.pacientes?.sex === 'F' ? 'F' : 'M',
-        birth_date: orderData.pacientes?.birth_date || null,
-      };
+      if (!pdfUrl) {
+        toast.info('No existía PDF almacenado. Se generará y guardará ahora...');
+        pdfUrl = await generateAndUploadResultsPdf(orderId);
+      }
 
-      const firstResultDate =
-        orderData.resultados?.map((r: any) => r.date).filter(Boolean)?.[0] ||
-        orderData.created_at ||
-        null;
-
-      const pdfOrder: PdfOrder = {
-        code: orderData.code || '',
-        accessKey: orderData.access_key || '',
-        date: firstResultDate || orderData.created_at || '',
-        created_at: firstResultDate || orderData.created_at || null,
-      };
-
-      const orderTests =
-        orderData.resultados?.map((res: any) => ({
-          id: res.pruebas?.id || res.test_id || res.id,
-          name: res.pruebas?.name || 'Examen',
-        })) || [];
-
-      const orderResults: PdfOrderResult[] =
-        orderData.resultados?.map((res: any) => ({
-          id: res.id,
-          testId: res.pruebas?.id || res.test_id || res.id,
-          testName: res.pruebas?.name || 'Examen',
-          notes: res.notes || res.observacion || res.resultado_texto || '',
-          date: res.date || null,
-          details:
-            res.resultado_detalle?.map((det: any) => ({
-              id: det.id,
-              parameterId: det.parametros_prueba?.id || det.parameter_id || null,
-              parameterName:
-                det.parametros_prueba?.name || det.name || det.parametro || 'Resultado',
-              value: getDisplayValue(det),
-              appliedRangeMin: det.applied_range_min ?? null,
-              appliedRangeMax: det.applied_range_max ?? null,
-              unit: getDisplayUnit(det),
-              status: det.status || 'normal',
-              observation: det.observation || '',
-              resultType: getResultType(det),
-            })) || [],
-        })) || [];
-
-      generateResultsPDF(pdfOrder, pdfPatient, orderTests, orderResults, pdfConfig);
-      toast.success('PDF generado correctamente');
+      await downloadPdfFromUrl(pdfUrl, orderData.code || 'resultados');
+      toast.success('PDF descargado correctamente');
     } catch (error: any) {
-      toast.error('No se pudo generar el PDF: ' + (error?.message || 'desconocido'));
+      toast.error('No se pudo obtener el PDF: ' + (error?.message || 'desconocido'));
     } finally {
       setDownloadingOrderId(null);
     }
@@ -724,7 +984,7 @@ export default function ResultsPage() {
                   <TableHead className="hidden md:table-cell">Pago</TableHead>
                   <TableHead className="hidden md:table-cell">Saldo</TableHead>
                   <TableHead>Estado</TableHead>
-                  <TableHead className="text-right">Reporte</TableHead>
+                  <TableHead className="text-right">Acciones</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -761,32 +1021,49 @@ export default function ResultsPage() {
                       </TableCell>
 
                       <TableCell className="text-right">
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className={paid ? 'text-blue-600' : 'text-slate-400'}
-                          onClick={() => {
-                            if (!paid) {
-                              toast.error(
-                                `No se puede generar el PDF porque la orden aún tiene un saldo pendiente de $${saldo.toFixed(2)}`
-                              );
-                              return;
+                        <div className="flex items-center justify-end gap-1">
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className={paid ? 'text-emerald-600' : 'text-slate-400'}
+                            onClick={() => handleSendResultsWhatsapp(order)}
+                            disabled={!paid}
+                            title={
+                              paid
+                                ? 'Enviar por WhatsApp'
+                                : `Pago incompleto. Saldo pendiente: $${saldo.toFixed(2)}`
                             }
-                            handleDownloadResultPdf(order.id);
-                          }}
-                          disabled={downloadingOrderId === order.id || !paid}
-                          title={
-                            paid
-                              ? 'Descargar PDF'
-                              : `Pago incompleto. Saldo pendiente: $${saldo.toFixed(2)}`
-                          }
-                        >
-                          {downloadingOrderId === order.id ? (
-                            <Loader2 className="w-4 h-4 animate-spin" />
-                          ) : (
-                            <Download className="w-4 h-4" />
-                          )}
-                        </Button>
+                          >
+                            <MessageCircle className="w-4 h-4" />
+                          </Button>
+
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className={paid ? 'text-blue-600' : 'text-slate-400'}
+                            onClick={() => {
+                              if (!paid) {
+                                toast.error(
+                                  `No se puede descargar el PDF porque la orden aún tiene un saldo pendiente de $${saldo.toFixed(2)}`
+                                );
+                                return;
+                              }
+                              handleDownloadResultPdf(order.id);
+                            }}
+                            disabled={downloadingOrderId === order.id || !paid}
+                            title={
+                              paid
+                                ? 'Descargar PDF'
+                                : `Pago incompleto. Saldo pendiente: $${saldo.toFixed(2)}`
+                            }
+                          >
+                            {downloadingOrderId === order.id ? (
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                            ) : (
+                              <Download className="w-4 h-4" />
+                            )}
+                          </Button>
+                        </div>
                       </TableCell>
                     </TableRow>
                   );
@@ -921,14 +1198,21 @@ export default function ResultsPage() {
                           )}
 
                           {resultType === 'text' && (
-                            <Textarea
-                              className="bg-white border-slate-200 min-h-[90px]"
-                              placeholder="Ingrese el resultado..."
-                              value={item.value_text}
-                              onChange={e =>
-                                updateEntryValue(param.id, 'value_text', e.target.value)
-                              }
-                            />
+                            <>
+                              <Textarea
+                                className="bg-white border-slate-200 min-h-[90px]"
+                                placeholder={param.valor_default ? 'Valor precargado editable...' : 'Ingrese el resultado...'}
+                                value={item.value_text}
+                                onChange={e =>
+                                  updateEntryValue(param.id, 'value_text', e.target.value)
+                                }
+                              />
+                              {param.valor_default && (
+                                <p className="text-[11px] text-slate-500 mt-1">
+                                  Valor por defecto: <span className="font-medium">{param.valor_default}</span>
+                                </p>
+                              )}
+                            </>
                           )}
 
                           {param.allow_observation && (

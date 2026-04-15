@@ -1,5 +1,5 @@
 import { createClient } from "npm:@supabase/supabase-js@2";
-import { PDFDocument, StandardFonts } from "npm:pdf-lib@1.17.1";
+import { PDFDocument, StandardFonts, rgb } from "npm:pdf-lib@1.17.1";
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -145,43 +145,56 @@ function generarClaveAcceso(params: {
   return clave49;
 }
 
-function resolverIdentificacionComprador(paciente: any): {
-  tipo: string;
-  identificacion: string;
-  razonSocial: string;
-} {
-  const nombre = String(paciente?.name || "Consumidor Final").trim() || "Consumidor Final";
-  const raw = String(paciente?.cedula || "").trim();
-  const clean = stripNonDigits(raw);
+function mapTipoIdentificacionSri(tipo: string | null | undefined): string {
+  const t = String(tipo || "").trim().toUpperCase();
 
-  if (!raw) {
+  if (t === "RUC") return "04";
+  if (t === "CEDULA") return "05";
+  if (t === "PASAPORTE") return "06";
+  if (t === "CONSUMIDOR_FINAL") return "07";
+
+  return "05";
+}
+
+function resolverCompradorDesdeOrden(order: any, paciente: any) {
+  const facturaTipo = String(order?.factura_tipo_identificacion || "").trim().toUpperCase();
+  const facturaIdentificacion = String(order?.factura_identificacion || "").trim();
+  const facturaNombres = String(order?.factura_nombres || "").trim();
+  const facturaDireccion = String(order?.factura_direccion || "").trim();
+  const facturaTelefono = String(order?.factura_telefono || "").trim();
+  const facturaEmail = String(order?.factura_email || "").trim();
+
+  const pacienteNombre = String(paciente?.name || "").trim();
+  const pacienteCedula = String(paciente?.cedula || "").trim();
+  const pacienteDireccion = String(paciente?.direccion || "").trim();
+  const pacienteTelefono = String(paciente?.phone || "").trim();
+  const pacienteEmail = String(paciente?.email || "").trim();
+
+  const nombres = facturaNombres || pacienteNombre || "Consumidor Final";
+  const identificacionRaw = facturaIdentificacion || pacienteCedula;
+  const identificacion = stripNonDigits(identificacionRaw);
+  const direccion = facturaDireccion || pacienteDireccion;
+  const telefono = facturaTelefono || pacienteTelefono;
+  const email = facturaEmail || pacienteEmail;
+
+  if (facturaTipo === "CONSUMIDOR_FINAL" || !identificacion) {
     return {
       tipo: "07",
       identificacion: "9999999999999",
       razonSocial: "Consumidor Final",
-    };
-  }
-
-  if (clean.length === 13) {
-    return {
-      tipo: "04",
-      identificacion: clean,
-      razonSocial: nombre,
-    };
-  }
-
-  if (clean.length === 10) {
-    return {
-      tipo: "05",
-      identificacion: clean,
-      razonSocial: nombre,
+      direccion,
+      telefono,
+      email: "",
     };
   }
 
   return {
-    tipo: "07",
-    identificacion: "9999999999999",
-    razonSocial: "Consumidor Final",
+    tipo: mapTipoIdentificacionSri(facturaTipo),
+    identificacion,
+    razonSocial: nombres,
+    direccion,
+    telefono,
+    email,
   };
 }
 
@@ -451,6 +464,9 @@ function buildFacturaXml(params: {
     tipo: string;
     identificacion: string;
     razonSocial: string;
+    direccion?: string;
+    telefono?: string;
+    email?: string;
   };
   detalles: Array<{
     descripcion: string;
@@ -472,6 +488,9 @@ function buildFacturaXml(params: {
 }) {
   const cfg = params.configFE;
   const paciente = params.paciente || {};
+  const emailFacturacion = String(params.comprador?.email || "").trim();
+  const direccionFacturacion = String(params.comprador?.direccion || "").trim();
+  const nombrePaciente = String(paciente?.name || "").trim();
   const impuestosAgrupados = agruparImpuestosTotales(params.detalles);
 
   const totalConImpuestos = `
@@ -510,7 +529,6 @@ function buildFacturaXml(params: {
     : "";
 
   const obligadoContabilidad = cfg.obligado_contabilidad ? "SI" : "NO";
-  const email = String(paciente?.email || "").trim();
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <factura id="comprobante" version="1.0.0">
@@ -554,84 +572,587 @@ function buildFacturaXml(params: {
     ${detallesXml}
   </detalles>
   <infoAdicional>
-    <campoAdicional nombre="Paciente">${xmlEscape(params.comprador.razonSocial)}</campoAdicional>
-    ${email ? `<campoAdicional nombre="Email">${xmlEscape(email)}</campoAdicional>` : ""}
-    ${
-      paciente?.direccion
-        ? `<campoAdicional nombre="Direccion">${xmlEscape(paciente.direccion)}</campoAdicional>`
-        : ""
-    }
+    ${nombrePaciente ? `<campoAdicional nombre="Paciente">${xmlEscape(nombrePaciente)}</campoAdicional>` : ""}
+    ${emailFacturacion ? `<campoAdicional nombre="Email">${xmlEscape(emailFacturacion)}</campoAdicional>` : ""}
+    ${direccionFacturacion ? `<campoAdicional nombre="Direccion">${xmlEscape(direccionFacturacion)}</campoAdicional>` : ""}
     <campoAdicional nombre="Orden">${xmlEscape(params.order?.code || params.order?.id || "")}</campoAdicional>
   </infoAdicional>
 </factura>`;
 }
 
 async function generarRidePdf(params: {
+  logo?: string;
   razonSocial: string;
+  nombreComercial?: string;
   ruc: string;
   numeroFactura: string;
   fecha: string;
-  paciente: string;
+  cliente: string;
   identificacion: string;
   direccion?: string;
   email?: string;
+  nombrePaciente?: string;
   claveAcceso: string;
   autorizacion: string;
-  detalles: Array<{ descripcion: string; precio: number }>;
-  subtotal: number;
-  iva: number;
+  fechaAutorizacion?: string;
+  ambiente?: string;
+  emision?: string;
+  direccionMatriz?: string;
+  direccionSucursal?: string;
+  obligadoContabilidad?: string;
+  formaPago?: string;
+  orden?: string;
+  detalles: Array<{
+    codigoPrincipal?: string;
+    codigoAuxiliar?: string;
+    cantidad: number;
+    descripcion: string;
+    detalleAdicional?: string;
+    precioUnitario: number;
+    subsidio?: number;
+    precioSinSubsidio?: number;
+    descuento?: number;
+    precioTotal: number;
+  }>;
+  subtotal0?: number;
+  subtotalNoObjetoIva?: number;
+  subtotalExentoIva?: number;
+  subtotalSinImpuestos: number;
+  totalDescuento?: number;
+  ice?: number;
+  irbpnr?: number;
+  propina?: number;
   total: number;
+  valorTotalSinSubsidio?: number;
+  ahorroPorSubsidio?: number;
 }) {
   const pdfDoc = await PDFDocument.create();
-  const page = pdfDoc.addPage([595, 842]);
+  const page = pdfDoc.addPage([595.28, 841.89]); // A4
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
-  const fontBold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+  const bold = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
 
-  let y = 790;
+  const cPrimary = rgb(0.12, 0.25, 0.52);
+  const cText = rgb(0.14, 0.16, 0.20);
+  const cMuted = rgb(0.45, 0.49, 0.57);
+  const cBorder = rgb(0.85, 0.88, 0.92);
+  const cSoft = rgb(0.96, 0.97, 0.995);
+  const cSoft2 = rgb(0.985, 0.988, 0.995);
+  const cGreen = rgb(0.91, 0.97, 0.93);
 
-  const draw = (text: string, x = 50, size = 10, bold = false) => {
-    page.drawText(text, {
+  const pageW = 595.28;
+  const pageH = 841.89;
+  const margin = 36;
+
+  const safe = (v: any) => String(v ?? "").trim();
+  const money = (v?: number | null) => Number(v || 0).toFixed(2);
+
+  const splitAuthorization = (value?: string | null) => {
+    const raw = safe(value).replace(/\s+/g, "");
+    if (!raw) return { line1: "—", line2: "" };
+
+    return {
+      line1: raw.slice(0, 17),
+      line2: raw.slice(17),
+    };
+  };
+
+  const formatAuthDate = (value?: string | null) => {
+    const raw = String(value ?? "").trim();
+    if (!raw) return "";
+
+    // Caso: viene ISO (2026-04-15T10:53:13-05:00)
+    if (raw.includes("T")) {
+      const [datePart, timePart] = raw.split("T");
+
+      if (!timePart) return raw;
+
+      // quitar zona horaria (-05:00 o Z)
+      const cleanTime = timePart.replace(/Z|([+-]\d{2}:\d{2})/, "");
+
+      return `${datePart} ${cleanTime}`;
+    }
+
+    // Caso: ya viene bien (2026-04-15 11:15:27)
+    return raw;
+  };
+
+  const textWidth = (text: string, size = 10, isBold = false) =>
+    (isBold ? bold : font).widthOfTextAtSize(safe(text), size);
+
+  const wrapText = (text: string, maxWidth: number, size = 10, isBold = false) => {
+    const f = isBold ? bold : font;
+    const words = safe(text).split(/\s+/).filter(Boolean);
+    if (!words.length) return [""];
+
+    const lines: string[] = [];
+    let current = "";
+
+    for (const word of words) {
+      const candidate = current ? `${current} ${word}` : word;
+      if (f.widthOfTextAtSize(candidate, size) <= maxWidth || !current) {
+        current = candidate;
+      } else {
+        lines.push(current);
+        current = word;
+      }
+    }
+
+    if (current) lines.push(current);
+    return lines;
+  };
+
+  const drawText = (
+    text: string,
+    x: number,
+    y: number,
+    size = 10,
+    isBold = false,
+    color = cText
+  ) => {
+    page.drawText(safe(text), {
       x,
       y,
       size,
-      font: bold ? fontBold : font,
-      maxWidth: 500,
+      font: isBold ? bold : font,
+      color,
     });
-    y -= size + 6;
   };
 
-  draw(params.razonSocial, 50, 14, true);
-  draw(`RUC: ${params.ruc}`, 50, 11);
-  draw(`Factura: ${params.numeroFactura}`, 50, 11);
-  draw(`Fecha emisión: ${params.fecha}`, 50, 11);
-  draw(`Cliente: ${params.paciente}`, 50, 11);
-  draw(`Identificación: ${params.identificacion}`, 50, 11);
-  if (params.direccion) draw(`Dirección: ${params.direccion}`, 50, 10);
-  if (params.email) draw(`Email: ${params.email}`, 50, 10);
+  const drawRightText = (
+    text: string,
+    rightX: number,
+    y: number,
+    size = 10,
+    isBold = false,
+    color = cText
+  ) => {
+    page.drawText(safe(text), {
+      x: rightX - textWidth(text, size, isBold),
+      y,
+      size,
+      font: isBold ? bold : font,
+      color,
+    });
+  };
 
-  y -= 10;
-  draw("Clave de acceso:", 50, 11, true);
-  draw(params.claveAcceso, 50, 9);
-  y -= 6;
-  draw("Número de autorización:", 50, 11, true);
-  draw(params.autorizacion, 50, 9);
+  const drawWrapped = (
+    text: string,
+    x: number,
+    y: number,
+    maxWidth: number,
+    size = 10,
+    isBold = false,
+    color = cText,
+    rowGap = 3
+  ) => {
+    const lines = wrapText(text, maxWidth, size, isBold);
+    let cy = y;
+    for (const line of lines) {
+      page.drawText(line, {
+        x,
+        y: cy,
+        size,
+        font: isBold ? bold : font,
+        color,
+      });
+      cy -= size + rowGap;
+    }
+    return { lines, endY: cy };
+  };
 
-  y -= 16;
-  draw("Detalle", 50, 12, true);
+  const box = (
+    x: number,
+    y: number,
+    w: number,
+    h: number,
+    opts?: { fill?: ReturnType<typeof rgb>; radius?: number; border?: ReturnType<typeof rgb> }
+  ) => {
+    page.drawRectangle({
+      x,
+      y,
+      width: w,
+      height: h,
+      color: opts?.fill,
+      borderColor: opts?.border ?? cBorder,
+      borderWidth: 1,
+      borderRadius: opts?.radius ?? 10,
+    });
+  };
 
-  for (const item of params.detalles) {
-    page.drawText(item.descripcion, { x: 50, y, size: 10, font, maxWidth: 380 });
-    page.drawText(`$${item.precio.toFixed(2)}`, { x: 470, y, size: 10, font });
-    y -= 18;
-    if (y < 120) break;
+  async function embedLogoFromValue(value?: string) {
+    const raw = safe(value);
+    if (!raw) return null;
+
+    try {
+      if (raw.startsWith("data:image/png")) {
+        const base64 = raw.split(",")[1] || "";
+        return await pdfDoc.embedPng(Uint8Array.from(atob(base64), c => c.charCodeAt(0)));
+      }
+
+      if (raw.startsWith("data:image/jpeg") || raw.startsWith("data:image/jpg")) {
+        const base64 = raw.split(",")[1] || "";
+        return await pdfDoc.embedJpg(Uint8Array.from(atob(base64), c => c.charCodeAt(0)));
+      }
+
+      if (raw.startsWith("http://") || raw.startsWith("https://")) {
+        const res = await fetch(raw);
+        if (!res.ok) return null;
+        const bytes = new Uint8Array(await res.arrayBuffer());
+        const contentType = res.headers.get("content-type") || "";
+        if (contentType.includes("png")) return await pdfDoc.embedPng(bytes);
+        if (contentType.includes("jpeg") || contentType.includes("jpg")) return await pdfDoc.embedJpg(bytes);
+      }
+    } catch {
+      return null;
+    }
+
+    return null;
   }
 
-  y -= 10;
-  draw(`Subtotal: $${params.subtotal.toFixed(2)}`, 360, 11, true);
-  draw(`IVA: $${params.iva.toFixed(2)}`, 360, 11, true);
-  draw(`Total: $${params.total.toFixed(2)}`, 360, 12, true);
+  async function barcodeImage(value: string) {
+    try {
+      const { default: bwipjs } = await import("npm:bwip-js@4.5.1");
+      const png = await bwipjs.toBuffer({
+        bcid: "code128",
+        text: value,
+        scale: 2,
+        height: 10,
+        includetext: false,
+        paddingwidth: 0,
+        paddingheight: 0,
+      });
+      return await pdfDoc.embedPng(png);
+    } catch {
+      return null;
+    }
+  }
+
+  const logo = await embedLogoFromValue(params.logo);
+  const barcode = await barcodeImage(params.claveAcceso);
+
+  // ===== HEADER =====
+  box(0, pageH - 140, pageW, 140, { fill: cSoft, border: cSoft, radius: 0 });
+
+  if (logo) {
+    const maxW = 78;
+    const maxH = 52;
+    const scale = Math.min(maxW / logo.width, maxH / logo.height);
+    const w = logo.width * scale;
+    const h = logo.height * scale;
+
+    page.drawImage(logo, {
+      x: margin,
+      y: pageH - 92,
+      width: w,
+      height: h,
+    });
+  }
+
+  const companyX = logo ? margin + 92 : margin;
+  const companyW = 240;
+
+  const rsLines = wrapText(params.razonSocial, companyW, 16, true);
+  let headerTextY = pageH - 52;
+  for (const line of rsLines) {
+    drawText(line, companyX, headerTextY, 16, true, cPrimary);
+    headerTextY -= 20;
+  }
+
+  if (safe(params.nombreComercial)) {
+    drawText(params.nombreComercial || "", companyX, headerTextY, 11, false, cText);
+    headerTextY -= 16;
+  }
+
+  const emisorDir = safe(params.direccionMatriz || params.direccionSucursal);
+  const emisorDirDraw = drawWrapped(
+    emisorDir,
+    companyX,
+    headerTextY,
+    companyW,
+    8.5,
+    false,
+    cMuted,
+    2
+  );
+
+  drawText(
+    `RUC: ${safe(params.ruc)}`,
+    companyX,
+    emisorDirDraw.endY - 6,
+    8.5,
+    false,
+    cMuted
+  );
+
+  const invoiceBoxX = pageW - margin - 182;
+  const invoiceBoxY = pageH - 98;
+  const invoiceBoxW = 182;
+  const invoiceBoxH = 66;
+  box(invoiceBoxX, invoiceBoxY, invoiceBoxW, invoiceBoxH, { fill: rgb(1, 1, 1), radius: 12 });
+
+  drawText("FACTURA ELECTRÓNICA", invoiceBoxX + 16, invoiceBoxY + 42, 13, true, cPrimary);
+  drawText(`No. ${safe(params.numeroFactura)}`, invoiceBoxX + 16, invoiceBoxY + 26, 10, true);
+  drawText(`Fecha emisión: ${safe(params.fecha)}`, invoiceBoxX + 16, invoiceBoxY + 12, 8.5, false, cMuted);
+
+  // ===== TOP GRID =====
+  let y = pageH - 146;
+  const leftX = margin;
+  const leftW = 295;
+  const rightX = leftX + leftW + 16;
+  const rightW = pageW - margin - rightX;
+
+  const clienteRows = [
+    { label: "Cliente", value: params.cliente || "—" },
+    { label: "Identificación", value: params.identificacion || "—" },
+    { label: "Dirección", value: params.direccion || "—" },
+    { label: "Email", value: params.email || "—" },
+  ];
+
+  const clientePrepared = clienteRows.map((r) => {
+    const lines = wrapText(r.value, leftW - 110, 9);
+    return { ...r, lines, h: Math.max(16, lines.length * 12) };
+  });
+  const clienteH = 24 + clientePrepared.reduce((a, b) => a + b.h, 0) + 12;
+
+  box(leftX, y - clienteH, leftW, clienteH, { fill: rgb(1, 1, 1), radius: 12 });
+  drawText("Datos del cliente", leftX + 14, y - 20, 11, true);
+
+  let cy = y - 42;
+  for (const row of clientePrepared) {
+    drawText(row.label, leftX + 14, cy, 8, true, cMuted);
+    drawWrapped(row.value, leftX + 96, cy, leftW - 110, 9, false, cText, 3);
+    cy -= row.h;
+  }
+
+  const authValue = safe(params.autorizacion || "—");
+  const claveValue = safe(params.claveAcceso || "—");
+  const fechaAuthValue = formatAuthDate(params.fechaAutorizacion);
+  const authSplit = splitAuthorization(authValue);
+  const claveLines = wrapText(claveValue, rightW - 28, 7.2);
+
+  // Autorización:
+  // línea 1 al mismo nivel de "Autorización"
+  // línea 2 debajo
+  const authBlockH = 24;
+
+  // Clave:
+  // más espacio vertical para que el código de barras no se corte
+  const claveBlockH = barcode
+    ? 56 + claveLines.length * 9
+    : 16 + claveLines.length * 9;
+
+  const tributariaH =
+    24 +   // título
+    authBlockH +
+    22 +   // fecha autorización
+    18 +   // ambiente
+    18 +   // emisión
+    18 +   // label clave
+    claveBlockH +
+    18;    // padding inferior
+
+  box(rightX, y - tributariaH, rightW, tributariaH, { fill: rgb(1, 1, 1), radius: 12 });
+  drawText("Información tributaria", rightX + 14, y - 20, 11, true);
+
+  let ty = y - 42;
+
+  // Autorización:
+  // misma línea del label y primera parte a la altura donde empieza fecha autorización
+  drawText("Autorización", rightX + 14, ty, 8, true, cMuted);
+  drawText(authSplit.line1, rightX + 120, ty, 8.3, false, cText);
+
+  // resto debajo
+  if (authSplit.line2) {
+    drawText(authSplit.line2, rightX + 14, ty - 12, 8.3, false, cText);
+  }
+
+  ty -= 24;
+
+  drawText("Fecha autorización", rightX + 14, ty, 8, true, cMuted);
+  drawText(fechaAuthValue || "—", rightX + 120, ty, 8.3, false, cText);
+
+  ty -= 18;
+  drawText("Ambiente", rightX + 14, ty, 8, true, cMuted);
+  drawText(params.ambiente || "PRUEBAS", rightX + 120, ty, 8.3, false, cText);
+
+  ty -= 18;
+  drawText("Emisión", rightX + 14, ty, 8, true, cMuted);
+  drawText(params.emision || "NORMAL", rightX + 120, ty, 8.3, false, cText);
+
+  ty -= 18;
+  drawText("Clave de acceso", rightX + 14, ty, 8, true, cMuted);
+
+  if (barcode) {
+    page.drawImage(barcode, {
+      x: rightX + 14,
+      y: ty - 40,
+      width: rightW - 28,
+      height: 24,
+    });
+
+    drawWrapped(
+      claveValue,
+      rightX + 14,
+      ty - 54,
+      rightW - 28,
+      7.2,
+      false,
+      cMuted,
+      2
+    );
+  } else {
+    drawWrapped(
+      claveValue,
+      rightX + 14,
+      ty - 12,
+      rightW - 28,
+      7.2,
+      false,
+      cText,
+      2
+    );
+  }
+
+  y -= Math.max(clienteH, tributariaH) + 22;
+
+  // ===== TABLE =====
+  drawText("Detalle de la factura", margin, y, 12, true);
+  y -= 14;
+
+  const tableX = margin;
+  const tableW = pageW - margin * 2;
+  const descW = 290;
+  const qtyW = 55;
+  const unitW = 85;
+  const totalW = tableW - descW - qtyW - unitW;
+  const headerH = 28;
+
+  box(tableX, y - headerH, tableW, headerH, { fill: cPrimary, border: cPrimary, radius: 10 });
+  drawText("Descripción", tableX + 14, y - 18, 9, true, rgb(1, 1, 1));
+  drawRightText("Cant.", tableX + descW + qtyW - 12, y - 18, 9, true, rgb(1, 1, 1));
+  drawRightText("P. Unit.", tableX + descW + qtyW + unitW - 12, y - 18, 9, true, rgb(1, 1, 1));
+  drawRightText("Total", tableX + tableW - 12, y - 18, 9, true, rgb(1, 1, 1));
+
+  y -= headerH + 6;
+
+  let zebra = false;
+  for (const item of params.detalles) {
+    const desc = [safe(item.descripcion), safe(item.detalleAdicional)].filter(Boolean).join(" — ");
+    const descLines = wrapText(desc || "Item", descW - 24, 9);
+    const rowH = Math.max(24, 16 + descLines.length * 11);
+
+    box(tableX, y - rowH, tableW, rowH, {
+      fill: zebra ? cSoft2 : rgb(1, 1, 1),
+      border: cBorder,
+      radius: 8,
+    });
+
+    drawWrapped(desc, tableX + 12, y - 16, descW - 24, 9, false, cText, 2);
+    drawRightText(Number(item.cantidad || 0).toFixed(2), tableX + descW + qtyW - 12, y - 16, 9);
+    drawRightText(`$${money(item.precioUnitario)}`, tableX + descW + qtyW + unitW - 12, y - 16, 9);
+    drawRightText(`$${money(item.precioTotal)}`, tableX + tableW - 12, y - 16, 9, true);
+
+    y -= rowH + 6;
+    zebra = !zebra;
+  }
+
+  y -= 8;
+
+  // ===== BOTTOM =====
+  const addX = margin;
+  const addW = 305;
+  const sumX = pageW - margin - 202;
+  const sumW = 202;
+
+  const additionalRows = [
+    { label: "Paciente", value: params.nombrePaciente || "—" },
+    { label: "Dirección", value: params.direccion || "—" },
+    { label: "Email", value: params.email || "—" },
+    { label: "Orden", value: params.orden || "—" },
+    { label: "Forma de pago", value: params.formaPago || "—" },
+  ];
+
+  const addPrepared = additionalRows.map((r) => {
+    const lines = wrapText(r.value, addW - 120, 8.5);
+    return { ...r, lines, h: Math.max(16, lines.length * 11) };
+  });
+
+  const addH = 24 + addPrepared.reduce((a, b) => a + b.h, 0) + 12;
+
+  const summaryRows = [
+    ["Subtotal 0%", params.subtotal0],
+    ["Subtotal no objeto IVA", params.subtotalNoObjetoIva],
+    ["Subtotal exento IVA", params.subtotalExentoIva],
+    ["Subtotal sin impuestos", params.subtotalSinImpuestos],
+    ["Descuento", params.totalDescuento],
+    ["ICE", params.ice],
+    ["IRBPNR", params.irbpnr],
+    ["Propina", params.propina],
+    ["Valor total", params.total],
+    ["Total sin subsidio", params.valorTotalSinSubsidio],
+    ["Ahorro por subsidio", params.ahorroPorSubsidio],
+  ];
+
+  const sumRowH = 24;
+  const sumH = 28 + summaryRows.length * sumRowH + 12;
+
+  const baseTop = y;
+  box(addX, baseTop - addH, addW, addH, { fill: rgb(1, 1, 1), radius: 12 });
+  drawText("Información adicional", addX + 14, baseTop - 20, 11, true);
+
+  let ay = baseTop - 42;
+  for (const row of addPrepared) {
+    drawText(row.label, addX + 14, ay, 8, true, cMuted);
+    drawWrapped(row.value, addX + 98, ay, addW - 112, 8.5, false, cText, 2);
+    ay -= row.h;
+  }
+
+  box(sumX, baseTop - sumH, sumW, sumH, { fill: rgb(1, 1, 1), radius: 12 });
+  drawText("Resumen", sumX + 14, baseTop - 20, 11, true);
+
+  let sy = baseTop - 48;
+  for (const [label, value] of summaryRows) {
+    box(sumX + 12, sy - 11, sumW - 24, 20, {
+      fill: label === "Valor total" ? cGreen : undefined,
+      border: cBorder,
+      radius: 6,
+    });
+
+    drawText(
+      String(label),
+      sumX + 22,
+      sy - 2,
+      8.2,
+      label === "Valor total",
+      label === "Valor total" ? cPrimary : cMuted
+    );
+
+    drawRightText(
+      `$${money(value as number)}`,
+      sumX + sumW - 22,
+      sy - 2,
+      8.2,
+      true,
+      label === "Valor total" ? cPrimary : cText
+    );
+
+    sy -= sumRowH;
+  }
+
+  drawText(
+    "Documento generado electrónicamente. Verifique la clave de acceso y el número de autorización en sus registros.",
+    margin,
+    26,
+    7.2,
+    false,
+    cMuted
+  );
 
   return await pdfDoc.save();
+}
+
+function money(value?: number | null): string {
+  return Number(value || 0).toFixed(2);
 }
 
 async function persistirFacturaYOrden(params: {
@@ -692,15 +1213,9 @@ Deno.serve(async (req) => {
       Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
     );
 
-    const signerUrl = String(
-      Deno.env.get("SIGNER_URL") ?? "https://firmador-facturas.onrender.com",
-    ).trim();
-    const signerApiKey = String(
-      Deno.env.get("SIGNER_API_KEY") ?? "9f7c2d0e4a1b6c8f_SIGNER_PRIVADO_2026_x9KpL2mQ7v",
-    ).trim();
-    const certPassword = String(
-      Deno.env.get("CERT_P12_PASSWORD") ?? "06092023DJ",
-    ).trim();
+    const signerUrl = String(Deno.env.get("SIGNER_URL") ?? "").trim();
+    const signerApiKey = String(Deno.env.get("SIGNER_API_KEY") ?? "").trim();
+    const certPassword = String(Deno.env.get("CERT_P12_PASSWORD") ?? "").trim();
 
     if (!signerUrl) {
       return jsonResponse({ ok: false, message: "Falta configurar SIGNER_URL" }, 500);
@@ -862,6 +1377,20 @@ Deno.serve(async (req) => {
       }, 400);
     }
 
+    const { data: labConfig, error: labConfigError } = await supabase
+      .from("configuracion_laboratorio")
+      .select("id, logo, name, legal_name, address, ruc, email")
+      .eq("id", configFE.laboratorio_id)
+      .maybeSingle();
+
+    if (labConfigError) {
+      return jsonResponse({
+        ok: false,
+        message: "Error consultando configuracion_laboratorio",
+        detail: labConfigError.message,
+      }, 500);
+    }
+
     const ambiente = normalizeAmbiente(configFE.ambiente);
     const ambienteCod = ambienteCodigo(ambiente);
     const fechaEmision = toDdMmYyyyEcuador();
@@ -884,7 +1413,15 @@ Deno.serve(async (req) => {
       tipoEmision: "1",
     });
 
-    const comprador = resolverIdentificacionComprador(paciente);
+    const comprador = resolverCompradorDesdeOrden(orderBase, paciente);
+
+    console.log("DEBUG COMPRADOR RESUELTO", {
+      factura_tipo_identificacion: orderBase.factura_tipo_identificacion,
+      factura_identificacion: orderBase.factura_identificacion,
+      factura_nombres: orderBase.factura_nombres,
+      factura_email: orderBase.factura_email,
+      comprador,
+    });
 
     const detalles = (detallesRaw || []).map((d: any) => {
       const descripcion = String(d?.pruebas?.name || "Examen de laboratorio");
@@ -1032,7 +1569,7 @@ Deno.serve(async (req) => {
       secuencial: secuencial,
       cliente_identificacion: comprador.identificacion,
       cliente_nombres: comprador.razonSocial,
-      cliente_email: paciente?.email || null,
+      cliente_email: comprador.email || null,
       subtotal: subtotalSinImpuestos,
       iva: totalIva,
       total: importeTotal,
@@ -1224,23 +1761,52 @@ Deno.serve(async (req) => {
     const pdfPath = `${configFE.laboratorio_id}/${orderBase.id}/${claveAcceso}_ride.pdf`;
 
     const rideBytes = await generarRidePdf({
-      razonSocial: configFE.razon_social,
-      ruc: stripNonDigits(configFE.ruc),
+      logo: labConfig?.logo || undefined,
+      razonSocial: labConfig?.legal_name || configFE.razon_social,
+      nombreComercial: labConfig?.name || configFE.nombre_comercial || configFE.razon_social,
+      ruc: stripNonDigits(labConfig?.ruc || configFE.ruc),
       numeroFactura,
       fecha: fechaEmision,
-      paciente: comprador.razonSocial,
+      cliente: comprador.razonSocial,
       identificacion: comprador.identificacion,
-      direccion: paciente?.direccion || undefined,
-      email: paciente?.email || undefined,
+      direccion: comprador.direccion || undefined,
+      email: comprador.email || undefined,
+      nombrePaciente: String(paciente?.name || "").trim() || undefined,
       claveAcceso,
       autorizacion: autorizacion.numeroAutorizacion || claveAcceso,
-      detalles: detalles.map((d) => ({
+      fechaAutorizacion: autorizacion.fechaAutorizacion || undefined,
+      ambiente,
+      emision: "NORMAL",
+      direccionMatriz:
+        labConfig?.address || configFE.direccion_matriz || configFE.direccion_establecimiento || "",
+      direccionSucursal:
+        labConfig?.address || configFE.direccion_establecimiento || configFE.direccion_matriz || "",
+      obligadoContabilidad: configFE.obligado_contabilidad ? "SI" : "NO",
+      formaPago: `${configFE.forma_pago_sri || "01"} - SIN UTILIZACION DEL SISTEMA FINANCIERO`,
+      orden: orderBase.code || orderBase.id,
+      detalles: detalles.map((d, idx) => ({
+        codigoPrincipal: String(idx + 1).padStart(3, "0"),
+        codigoAuxiliar: "",
+        cantidad: d.cantidad,
         descripcion: d.descripcion,
-        precio: round2(d.precioTotalSinImpuesto + d.valorIva),
+        detalleAdicional: "",
+        precioUnitario: d.precioUnitario,
+        subsidio: 0,
+        precioSinSubsidio: 0,
+        descuento: 0,
+        precioTotal: round2(d.precioTotalSinImpuesto + d.valorIva),
       })),
-      subtotal: subtotalSinImpuestos,
-      iva: totalIva,
+      subtotal0: totalIva === 0 ? subtotalSinImpuestos : 0,
+      subtotalNoObjetoIva: 0,
+      subtotalExentoIva: 0,
+      subtotalSinImpuestos,
+      totalDescuento,
+      ice: 0,
+      irbpnr: 0,
+      propina: 0,
       total: importeTotal,
+      valorTotalSinSubsidio: 0,
+      ahorroPorSubsidio: 0,
     });
 
     const up4 = await supabase.storage
@@ -1283,6 +1849,46 @@ Deno.serve(async (req) => {
       incrementarSecuencial: true,
     });
 
+    const esConsumidorFinal = comprador.tipo === "07";
+    const emailDestino = String(comprador.email || "").trim();
+
+    if (!esConsumidorFinal && emailDestino) {
+      try {
+        const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
+        const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
+
+        const rideArrayBuffer = rideBytes.buffer.slice(
+          rideBytes.byteOffset,
+          rideBytes.byteOffset + rideBytes.byteLength
+        );
+        const pdfBase64 = arrayBufferToBase64(rideArrayBuffer);
+
+        const emailResp = await fetch(`${supabaseUrl}/functions/v1/send-document-email`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${serviceRoleKey}`,
+          },
+          body: JSON.stringify({
+            to: emailDestino,
+            documentType: "factura",
+            orderCode: numeroFactura,
+            patientName: comprador.razonSocial,
+            pdfBase64,
+            filename: `factura_${numeroFactura}.pdf`,
+          }),
+        });
+
+        const emailData = await emailResp.json().catch(() => null);
+
+        if (!emailResp.ok || !emailData?.ok) {
+          console.error("No se pudo enviar la factura por correo:", emailData);
+        }
+      } catch (emailError) {
+        console.error("Error enviando factura por correo:", emailError);
+      }
+    }
+
     return jsonResponse({
       ok: true,
       message: "Factura autorizada correctamente",
@@ -1295,6 +1901,7 @@ Deno.serve(async (req) => {
       factura_xml_firmado_path: xmlFirmadoPath,
       factura_xml_autorizado_path: xmlAutorizadoPath,
       factura_ride_pdf_path: pdfPath,
+      email_enviado: !esConsumidorFinal && !!emailDestino,
     });
   } catch (error: any) {
     console.error("ERROR EDGE FACTURA:", error);

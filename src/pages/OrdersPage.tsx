@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
+import { sendDocumentEmail } from '@/lib/sendDocumentEmail';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Textarea } from '@/components/ui/textarea';
@@ -687,6 +688,38 @@ export default function OrdersPage() {
     return { ok: true, data };
   };
 
+  const enviarFacturaPorCorreo = async (params: {
+    to: string;
+    numeroFactura: string;
+    clienteNombre?: string;
+    pdfPath: string;
+  }) => {
+    const cleanPath = String(params.pdfPath || '').trim().replace(/^\/+/, '');
+
+    if (!cleanPath) {
+      throw new Error('No existe PDF de factura para enviar');
+    }
+
+    const { data: publicData } = supabase.storage
+      .from('facturas-pdf')
+      .getPublicUrl(cleanPath);
+
+    const pdfUrl = publicData?.publicUrl;
+
+    if (!pdfUrl) {
+      throw new Error('No se pudo obtener la URL pública del PDF de factura');
+    }
+
+    await sendDocumentEmail({
+      to: params.to,
+      documentType: 'factura',
+      orderCode: params.numeroFactura,
+      patientName: params.clienteNombre || '',
+      pdfUrl,
+      filename: `factura_${params.numeroFactura}.pdf`,
+    });
+  };
+
   const openRidePdf = async (pdfPath: string) => {
     if (!pdfPath) {
       toast.error('No existe PDF RIDE para esta orden');
@@ -797,6 +830,32 @@ export default function OrdersPage() {
     try {
       const billingCustomer = await upsertBillingCustomer(validacionFact.data);
 
+      const billingDataToUse = {
+        tipo_identificacion:
+          billingCustomer?.tipo_identificacion ||
+          validacionFact.data.tipo_identificacion,
+        identificacion:
+          String(
+            billingCustomer?.identificacion || validacionFact.data.identificacion || ''
+          ).trim(),
+        nombres:
+          String(
+            billingCustomer?.nombres || validacionFact.data.nombres || ''
+          ).trim(),
+        direccion:
+          String(
+            billingCustomer?.direccion || validacionFact.data.direccion || ''
+          ).trim(),
+        telefono:
+          String(
+            billingCustomer?.telefono || validacionFact.data.telefono || ''
+          ).trim(),
+        email:
+          String(
+            billingCustomer?.email || validacionFact.data.email || ''
+          ).trim(),
+      };
+
       const { data: order, error: orderError } = await supabase
         .from('ordenes')
         .insert([
@@ -809,12 +868,12 @@ export default function OrdersPage() {
             status: 'pending',
             factura_estado: 'PENDIENTE',
             billing_customer_id: billingCustomer?.id || null,
-            factura_tipo_identificacion: validacionFact.data.tipo_identificacion,
-            factura_identificacion: validacionFact.data.identificacion,
-            factura_nombres: validacionFact.data.nombres,
-            factura_direccion: validacionFact.data.direccion,
-            factura_telefono: validacionFact.data.telefono,
-            factura_email: validacionFact.data.email || null,
+            factura_tipo_identificacion: billingDataToUse.tipo_identificacion,
+            factura_identificacion: billingDataToUse.identificacion,
+            factura_nombres: billingDataToUse.nombres,
+            factura_direccion: billingDataToUse.direccion,
+            factura_telefono: billingDataToUse.telefono,
+            factura_email: billingDataToUse.email || null,
           },
         ])
         .select()
@@ -898,14 +957,42 @@ export default function OrdersPage() {
           );
         }
       } else {
-        toast.success('Orden y factura generadas correctamente');
-
-        if (
+        const facturaAutorizada =
           facturaResp?.sri_estado === 'AUTORIZADO' ||
           facturaResp?.factura_estado === 'AUTORIZADO' ||
-          facturaResp?.autorizado === true
-        ) {
-          await generarRideDesdeXml(order.id, true, false);
+          facturaResp?.autorizado === true;
+
+        const esConsumidorFinal =
+          billingDataToUse.tipo_identificacion === 'CONSUMIDOR_FINAL' ||
+          billingDataToUse.identificacion === '9999999999999';
+
+        if (facturaAutorizada) {
+          if (
+            !esConsumidorFinal &&
+            billingDataToUse.email &&
+            facturaResp?.factura_ride_pdf_path &&
+            facturaResp?.numero_factura
+          ) {
+            try {
+              await enviarFacturaPorCorreo({
+                to: billingDataToUse.email,
+                numeroFactura: facturaResp.numero_factura,
+                clienteNombre: billingDataToUse.nombres,
+                pdfPath: facturaResp.factura_ride_pdf_path,
+              });
+
+              toast.success('Orden y factura generadas correctamente. La factura fue enviada por correo.');
+            } catch (emailError: any) {
+              toast.warning(
+                'La factura fue autorizada, pero no se pudo enviar por correo: ' +
+                  (emailError?.message || 'desconocido')
+              );
+            }
+          } else {
+            toast.success('Orden y factura generadas correctamente.');
+          }
+        } else {
+          toast.success('Orden creada correctamente');
         }
       }
 
@@ -1097,6 +1184,49 @@ export default function OrdersPage() {
 
         if (selectedOrder?.id === updatedOrder.id) {
           setSelectedOrder(updatedOrder);
+        }
+
+        const saldoAnterior = saldo;
+        const totalNuevo = Number(updatedOrder.total || 0);
+        const pagadoNuevo = Number(updatedOrder.paid_amount || 0);
+        const saldoNuevo = Math.max(totalNuevo - pagadoNuevo, 0);
+
+        if (
+          updatedOrder.status === 'completed' &&
+          saldoAnterior > 0 &&
+          saldoNuevo <= 0 &&
+          updatedOrder.pacientes?.email
+        ) {
+          try {
+            const { data: resultRows, error: resultError } = await supabase
+              .from('resultados')
+              .select('resultados_url')
+              .eq('order_id', updatedOrder.id)
+              .not('resultados_url', 'is', null)
+              .limit(1);
+
+            if (resultError) throw resultError;
+
+            const pdfUrl = resultRows?.[0]?.resultados_url;
+
+            if (pdfUrl) {
+              await sendDocumentEmail({
+                to: updatedOrder.pacientes.email,
+                documentType: 'resultados',
+                orderCode: updatedOrder.code,
+                patientName: updatedOrder.pacientes?.name || '',
+                pdfUrl,
+                filename: `resultados_${updatedOrder.code}.pdf`,
+              });
+
+              toast.success('Pago completado y resultados enviados al paciente');
+            }
+          } catch (emailError: any) {
+            toast.error(
+              'El pago se registró, pero no se pudieron enviar los resultados: ' +
+                (emailError?.message || 'desconocido')
+            );
+          }
         }
       }
     } catch (error: any) {

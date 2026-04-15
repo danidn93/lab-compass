@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -26,21 +26,12 @@ import {
   PdfPatient,
 } from "@/lib/pdfGenerator";
 
-declare global {
-  interface Window {
-    PPaymentButtonBox?: any;
-  }
-}
-
 type LabIdentity = {
   name: string;
   logo: string | null;
 };
 
 type ResultType = "numeric" | "boolean" | "text";
-
-const PAYPHONE_TOKEN = import.meta.env.VITE_PAYPHONE_TOKEN || "";
-const PAYPHONE_STORE_ID = import.meta.env.VITE_PAYPHONE_STORE_ID || "";
 
 const COLORS = {
   primary: "#8C1D2C",
@@ -68,16 +59,12 @@ export default function PatientPortalPage() {
   const [accessKey, setAccessKey] = useState("");
   const [loading, setLoading] = useState(false);
   const [downloading, setDownloading] = useState(false);
-  const [confirmingPayment, setConfirmingPayment] = useState(false);
-  const [payphoneReady, setPayphoneReady] = useState(false);
   const [error, setError] = useState("");
   const [labConfig, setLabConfig] = useState<LabIdentity>({
     name: "BioAnalítica",
     logo: null,
   });
   const [foundOrder, setFoundOrder] = useState<any>(null);
-
-  const paymentContainerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     const fetchLabIdentity = async () => {
@@ -100,102 +87,6 @@ export default function PatientPortalPage() {
     };
 
     fetchLabIdentity();
-  }, []);
-
-  useEffect(() => {
-    const linkId = "payphone-box-css";
-    const scriptId = "payphone-box-js";
-
-    if (!document.getElementById(linkId)) {
-      const link = document.createElement("link");
-      link.id = linkId;
-      link.rel = "stylesheet";
-      link.href =
-        "https://cdn.payphonetodoesposible.com/box/v1.1/payphone-payment-box.css";
-      document.head.appendChild(link);
-    }
-
-    const existingScript = document.getElementById(
-      scriptId
-    ) as HTMLScriptElement | null;
-
-    if (existingScript) {
-      setPayphoneReady(true);
-      return;
-    }
-
-    const script = document.createElement("script");
-    script.id = scriptId;
-    script.type = "module";
-    script.src =
-      "https://cdn.payphonetodoesposible.com/box/v1.1/payphone-payment-box.js";
-    script.onload = () => setPayphoneReady(true);
-    script.onerror = () => {
-      console.error("No se pudo cargar la Cajita de Pagos de Payphone");
-      setPayphoneReady(false);
-    };
-
-    document.body.appendChild(script);
-  }, []);
-
-  useEffect(() => {
-    const confirmFromUrl = async () => {
-      const params = new URLSearchParams(window.location.search);
-      const id = params.get("id");
-      const clientTransactionId = params.get("clientTransactionId");
-
-      if (!id || !clientTransactionId) return;
-
-      try {
-        setConfirmingPayment(true);
-
-        const { data, error } = await supabase.functions.invoke(
-          "payphone-verify",
-          {
-            body: {
-              id: Number(id),
-              clientTransactionId,
-            },
-          }
-        );
-
-        if (error) throw error;
-
-        if (data?.approved) {
-          toast.success(data?.message || "Pago confirmado correctamente");
-
-          const nextCode =
-            data?.orderCode || localStorage.getItem("portal_last_code") || "";
-          const nextKey =
-            data?.accessKey ||
-            localStorage.getItem("portal_last_access_key") ||
-            "";
-
-          if (nextCode && nextKey) {
-            setCode(nextCode);
-            setAccessKey(nextKey);
-            await searchOrder(nextCode, nextKey);
-          }
-        } else {
-          toast.error(data?.message || "No se pudo confirmar el pago");
-        }
-      } catch (err: any) {
-        console.error(err);
-        toast.error(
-          "No se pudo confirmar el pago automáticamente: " +
-            (err?.message || "error desconocido")
-        );
-      } finally {
-        setConfirmingPayment(false);
-
-        const cleanUrl = new URL(window.location.href);
-        cleanUrl.searchParams.delete("id");
-        cleanUrl.searchParams.delete("clientTransactionId");
-        window.history.replaceState({}, "", cleanUrl.toString());
-      }
-    };
-
-    confirmFromUrl();
   }, []);
 
   const safeNumber = (value: any, fallback = 0): number => {
@@ -442,104 +333,6 @@ export default function PatientPortalPage() {
     return dates[0] || foundOrder?.created_at || null;
   }, [foundOrder]);
 
-  useEffect(() => {
-    if (!foundOrder || isPaid || !payphoneReady || !paymentContainerRef.current)
-      return;
-
-    if (!PAYPHONE_TOKEN || !PAYPHONE_STORE_ID) {
-      return;
-    }
-
-    const container = paymentContainerRef.current;
-    container.innerHTML = "";
-
-    const balanceCents = Math.round(pendingAmount * 100);
-
-    if (balanceCents <= 0) return;
-    if (!window.PPaymentButtonBox) return;
-
-    const normalizeEcuadorPhoneForPayphone = (
-      raw: any
-    ): string | undefined => {
-      const original = String(raw || "").trim();
-      if (!original) return undefined;
-
-      let cleaned = original.replace(/\s+/g, "").replace(/[^\d+]/g, "");
-
-      if (cleaned.startsWith("+593")) {
-        const rest = cleaned.slice(4).replace(/\D/g, "");
-        if (/^\d{9}$/.test(rest)) {
-          return `+593${rest}`;
-        }
-        return undefined;
-      }
-
-      cleaned = cleaned.replace(/\D/g, "");
-
-      if (/^09\d{8}$/.test(cleaned)) {
-        return `+593${cleaned.slice(1)}`;
-      }
-
-      if (/^9\d{8}$/.test(cleaned)) {
-        return `+593${cleaned}`;
-      }
-
-      return undefined;
-    };
-
-    const patientPhone = normalizeEcuadorPhoneForPayphone(
-      foundOrder?.pacientes?.phone
-    );
-
-    const normalizeEmail = (raw: any): string | undefined => {
-      const value = String(raw || "").trim().toLowerCase();
-      if (!value) return undefined;
-      return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)
-        ? value
-        : undefined;
-    };
-
-    const normalizeDocumentId = (raw: any): string | undefined => {
-      const value = String(raw || "").replace(/\D/g, "");
-      if (/^\d{10}$/.test(value)) return value;
-      if (/^\d{13}$/.test(value)) return value;
-      return undefined;
-    };
-
-    const patientEmail = normalizeEmail(foundOrder?.pacientes?.email);
-    const patientDocument = normalizeDocumentId(foundOrder?.pacientes?.cedula);
-
-    const clientTransactionId = `${foundOrder.code}-${Date.now()}`
-      .replace(/[^A-Za-z0-9-]/g, "")
-      .slice(0, 30);
-
-    try {
-      const ppb = new window.PPaymentButtonBox({
-        token: PAYPHONE_TOKEN,
-        clientTransactionId,
-        amount: balanceCents,
-        amountWithoutTax: balanceCents,
-        currency: "USD",
-        storeId: PAYPHONE_STORE_ID,
-        reference: `Pago orden ${foundOrder.code}`,
-        lang: "es",
-        defaultMethod: "card",
-        timeZone: -5,
-        lat: "-2.13404",
-        lng: "-79.59415",
-        optionalParameter: foundOrder.id,
-        phoneNumber: patientPhone || undefined,
-        email: patientEmail || undefined,
-        documentId: patientDocument || undefined,
-        identificationType: 1,
-      });
-
-      ppb.render(container.id);
-    } catch (err) {
-      console.error("Error renderizando Payphone:", err);
-    }
-  }, [foundOrder, isPaid, payphoneReady, pendingAmount]);
-
   const handleDownload = async () => {
     if (!foundOrder) return;
 
@@ -735,13 +528,13 @@ export default function PatientPortalPage() {
 
         <Button
           onClick={handleSearch}
-          disabled={loading || confirmingPayment}
+          disabled={loading}
           className="h-12 w-full border-0 text-lg font-bold text-white shadow-lg transition-all hover:scale-[1.02] active:scale-[0.98]"
           style={{
             background: `linear-gradient(to right, ${COLORS.primary}, ${COLORS.secondaryDark})`,
           }}
         >
-          {loading || confirmingPayment ? (
+          {loading ? (
             <Loader2 className="h-5 w-5 animate-spin" />
           ) : (
             "Consultar Resultados"
@@ -786,7 +579,7 @@ export default function PatientPortalPage() {
         ) : (
           <Download className="mr-2 h-4 w-4" />
         )}
-        Descargar Reporte Oficial
+        Descargar Resultados
       </Button>
     </div>
   );
@@ -970,12 +763,6 @@ export default function PatientPortalPage() {
               Será redirigido a WhatsApp para coordinar su pago y habilitar la revisión de resultados.
             </p>
           </div>
-
-          <div
-            ref={paymentContainerRef}
-            id="payphone-payment-box"
-            className="pt-2"
-          />
         </CardContent>
       </Card>
     );
@@ -1206,19 +993,6 @@ export default function PatientPortalPage() {
               Portal de Resultados en Línea
             </p>
           </div>
-
-          {confirmingPayment && (
-            <div
-              className="inline-flex items-center gap-2 rounded-full border bg-white px-4 py-2 text-sm shadow-sm"
-              style={{
-                color: COLORS.textSoft,
-                borderColor: COLORS.border,
-              }}
-            >
-              <Loader2 className="h-4 w-4 animate-spin" />
-              Confirmando su pago...
-            </div>
-          )}
         </div>
 
         {!foundOrder ? (

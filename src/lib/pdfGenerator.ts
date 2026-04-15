@@ -480,13 +480,11 @@ function drawSignatureBlock(doc: jsPDF, config: PdfLabConfig) {
   const sello = normalizeImageData(config.sello);
   const selloFormat = imageFormatFromBase64(sello);
 
-  // Sello en color original
   const selloW = 29;
   const selloH = 29;
   const selloX = 145;
   const selloY = 232;
 
-  // Firma en tamaño natural, solo más abajo y un poco a la izquierda
   const firmaW = 40;
   const firmaH = 14;
   const firmaX = 139;
@@ -515,60 +513,13 @@ function buildPrintableExamTitle(testName: string) {
   return `EXAMEN ${clean}`;
 }
 
-export function generateOrderPDF(
-  order: PdfOrder,
-  patient: PdfPatient,
-  orderTests: Array<{ name: string; price: number }>,
-  config: PdfLabConfig
-) {
-  const doc = new jsPDF("p", "mm", "a4");
-
-  addHeader(doc, config);
-  drawPatientLine(doc, patient);
-
-  doc.setFont("times", "bold");
-  doc.setFontSize(15);
-  doc.setTextColor(65, 65, 65);
-  doc.text("ORDEN DE EXÁMENES", 105, 88, { align: "center" });
-
-  drawResultFrame(doc, 94, 270);
-  addPageBackground(doc, config);
-
-  let y = 108;
-
-  doc.setFont("times", "bold");
-  doc.setFontSize(11);
-  doc.setTextColor(70, 70, 70);
-
-  orderTests.forEach((test) => {
-    doc.text(safeText(test.name), 22, y);
-    doc.text(":", 115, y);
-
-    doc.setFont("times", "normal");
-    doc.text(`$${Number(test.price || 0).toFixed(2)}`, 125, y);
-
-    y += 8;
-    doc.setFont("times", "bold");
-  });
-
-  const total = orderTests.reduce((acc, t) => acc + Number(t.price || 0), 0);
-
-  y += 4;
-  doc.setDrawColor(180, 180, 180);
-  doc.line(120, y, 180, y);
-  y += 7;
-
-  doc.setFont("times", "bold");
-  doc.text("TOTAL", 125, y);
-  doc.text(`$${total.toFixed(2)}`, 180, y, { align: "right" });
-
-  doc.setFont("courier", "bold");
-  doc.setFontSize(14);
-  doc.setTextColor(50, 50, 50);
-  doc.text(formatDateSpanish(order.created_at || order.date), 20, PAGE.dateY);
-
-  drawSignatureBlock(doc, config);
-  doc.save(`orden_${order.code}.pdf`);
+export function downloadBlob(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 export function generateResultsPDF(
@@ -576,8 +527,9 @@ export function generateResultsPDF(
   patient: PdfPatient,
   orderTests: Array<{ id: string; name: string }>,
   orderResults: PdfOrderResult[],
-  config: PdfLabConfig
-) {
+  config: PdfLabConfig,
+  options?: { autoDownload?: boolean; fileName?: string }
+): Blob {
   const doc = new jsPDF("p", "mm", "a4");
   let started = false;
 
@@ -637,5 +589,11 @@ export function generateResultsPDF(
     drawSignatureBlock(doc, config);
   });
 
-  doc.save(`resultados_${order.code}.pdf`);
+  const blob = doc.output("blob");
+
+  if (options?.autoDownload) {
+    downloadBlob(blob, options.fileName || `resultados_${order.code}.pdf`);
+  }
+
+  return blob;
 }
