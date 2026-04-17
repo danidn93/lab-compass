@@ -18,13 +18,6 @@ import {
   CheckCircle2,
 } from "lucide-react";
 import { toast } from "sonner";
-import {
-  generateResultsPDF,
-  PdfLabConfig,
-  PdfOrder,
-  PdfOrderResult,
-  PdfPatient,
-} from "@/lib/pdfGenerator";
 
 type LabIdentity = {
   name: string;
@@ -216,11 +209,6 @@ export default function PatientPortalPage() {
     return d.toLocaleDateString("es-EC");
   };
 
-  const buildPrintableDate = (dateValue?: string | null) => {
-    if (!dateValue) return new Date().toLocaleDateString("es-EC");
-    return new Date(dateValue).toLocaleDateString("es-EC");
-  };
-
   const getResultType = (det: any): ResultType => {
     return (det?.parametros_prueba?.result_type || "numeric") as ResultType;
   };
@@ -333,6 +321,20 @@ export default function PatientPortalPage() {
     return dates[0] || foundOrder?.created_at || null;
   }, [foundOrder]);
 
+  const getOfficialResultsUrl = () => {
+    if (!foundOrder?.resultados?.length) return "";
+
+    const resultsWithUrl = [...foundOrder.resultados]
+      .filter((res: any) => !!res?.resultados_url)
+      .sort((a: any, b: any) => {
+        const da = new Date(a?.date || a?.created_at || 0).getTime();
+        const db = new Date(b?.date || b?.created_at || 0).getTime();
+        return db - da;
+      });
+
+    return resultsWithUrl[0]?.resultados_url || "";
+  };
+
   const handleDownload = async () => {
     if (!foundOrder) return;
 
@@ -353,94 +355,45 @@ export default function PatientPortalPage() {
     setDownloading(true);
 
     try {
-      toast.info("Generando reporte PDF oficial...");
+      const resultadosUrl = getOfficialResultsUrl();
 
-      const { data: configData, error: configError } = await supabase
-        .from("configuracion_laboratorio")
-        .select("*")
-        .maybeSingle();
+      if (!resultadosUrl) {
+        throw new Error(
+          "No existe un archivo de resultados disponible para esta orden"
+        );
+      }
 
-      if (configError) throw configError;
-      if (!configData)
-        throw new Error("No existe la configuración del laboratorio");
+      const cleanUrl = String(resultadosUrl).trim();
 
-      const pdfConfig: PdfLabConfig = {
-        name: configData.name || "LABORATORIO CLÍNICO",
-        owner: configData.owner || "",
-        address: configData.address || "",
-        ruc: configData.ruc || "",
-        healthRegistry: configData.health_registry || "",
-        phone: configData.phone || "",
-        schedule: configData.schedule || "",
-        logo: configData.logo || "",
-        firma: configData.firma || "",
-        sello: configData.sello || "",
-      };
+      const fileName = `Resultados_${foundOrder.code || "orden"}.pdf`;
 
-      const pdfPatient: PdfPatient = {
-        name: foundOrder.pacientes?.name || "",
-        cedula: foundOrder.pacientes?.cedula || "",
-        phone: foundOrder.pacientes?.phone || "",
-        sex: foundOrder.pacientes?.sex === "F" ? "F" : "M",
-        birth_date: foundOrder.pacientes?.birth_date || null,
-      };
+      const response = await fetch(cleanUrl);
+      if (!response.ok) {
+        throw new Error("No se pudo descargar el archivo de resultados");
+      }
 
-      const pdfOrder: PdfOrder = {
-        code: foundOrder.code || "",
-        accessKey: foundOrder.access_key || "",
-        date: buildPrintableDate(firstResultDate),
-        created_at: firstResultDate || foundOrder.created_at || null,
-      };
+      const blob = await response.blob();
+      const blobUrl = window.URL.createObjectURL(blob);
 
-      const orderTests =
-        foundOrder.resultados?.map((res: any) => ({
-          id: res.pruebas?.id || res.test_id || res.id,
-          name: res.pruebas?.name || "Examen",
-        })) || [];
+      const link = document.createElement("a");
+      link.href = blobUrl;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
 
-      const orderResults: PdfOrderResult[] =
-        foundOrder.resultados?.map((res: any) => ({
-          id: res.id,
-          testId: res.pruebas?.id || res.test_id || res.id,
-          testName: res.pruebas?.name || "Examen",
-          notes: res.notes || res.observacion || res.resultado_texto || "",
-          details:
-            res.resultado_detalle?.map((det: any) => ({
-              id: det.id,
-              parameterId: det.parametros_prueba?.id || det.parameter_id || null,
-              parameterName:
-                det.parametros_prueba?.name ||
-                det.name ||
-                det.parametro ||
-                "Resultado",
-              value: getDisplayValue(det),
-              appliedRangeMin: det.applied_range_min ?? null,
-              appliedRangeMax: det.applied_range_max ?? null,
-              unit: getDisplayUnit(det),
-              status: det.status || "normal",
-              observation: det.observation || "",
-              resultType: getResultType(det),
-            })) || [],
-        })) || [];
+      window.URL.revokeObjectURL(blobUrl);
 
-      generateResultsPDF(
-        pdfOrder,
-        pdfPatient,
-        orderTests,
-        orderResults,
-        pdfConfig
-      );
-
-      toast.success("PDF generado correctamente");
+      toast.success("Resultados descargados correctamente");
     } catch (err: any) {
+      console.error(err);
       toast.error(
-        "No se pudo generar el PDF: " + (err?.message || "desconocido")
+        "No se pudo descargar el PDF: " + (err?.message || "desconocido")
       );
     } finally {
       setDownloading(false);
     }
   };
-
   const renderSearchCard = () => (
     <Card
       className="overflow-hidden border-0 shadow-2xl animate-in fade-in slide-in-from-bottom-4 duration-700"
