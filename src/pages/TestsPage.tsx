@@ -1349,7 +1349,32 @@ export default function TestsPage() {
                 );
               })}
             </div>
+            <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const newItem = createParameterItem();
+                      setStructureItems(prev => [...prev, newItem]);
+                      setOpenParamId(newItem.id);
+                    }}
+                  >
+                    <Plus className="w-3 h-3 mr-1" />
+                    Parámetro
+                  </Button>
 
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const newItem = createDividerItem();
+                      setStructureItems(prev => [...prev, newItem]);
+                    }}
+                  >
+                    <Plus className="w-3 h-3 mr-1" />
+                    Divisor
+                  </Button>
+                </div>              
             <div className="pt-4 border-t">
               <div className="flex items-center justify-between mb-4">
                 <h4 className="font-bold">Reactivos vinculados</h4>
