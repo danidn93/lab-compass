@@ -2,10 +2,18 @@ import { useEffect, useMemo, useState } from "react";
 import { supabase } from "@/lib/supabaseClient";
 import { toast } from "sonner";
 
+type ParametroPruebaLite = {
+  id: string | number;
+  name: string;
+};
+
 type Prueba = {
   id: string | number;
   name: string;
   price: number | string;
+  description?: string | null;
+  visible_description?: boolean | null;
+  parametros_prueba?: ParametroPruebaLite[] | null;
 };
 
 type TipoIdentificacion = "CEDULA" | "PASAPORTE";
@@ -55,6 +63,125 @@ const COLORS = {
   danger: "#B91C1C",
 };
 
+function normalizeExamName(value: any) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizeExamDescription(
+  description: any,
+  visibleDescription: boolean | null | undefined
+) {
+  if (visibleDescription === false) return "";
+  return String(description || "").trim().toLowerCase();
+}
+
+function buildGroupedTestKey(
+  name: any,
+  description: any,
+  visibleDescription: boolean | null | undefined
+) {
+  return `${normalizeExamName(name)}|||${normalizeExamDescription(
+    description,
+    visibleDescription
+  )}`;
+}
+
+function getSortedParameterNames(prueba: Prueba) {
+  return [...(prueba.parametros_prueba || [])]
+    .map((p) => String(p.name || "").trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b, "es", { sensitivity: "base" }));
+}
+
+function buildVariantLabel(prueba: Prueba, showParameters: boolean) {
+  const visibleDescription = prueba.visible_description ?? true;
+  const description = visibleDescription
+    ? String(prueba.description || "").trim()
+    : "";
+
+  const parameterNames = getSortedParameterNames(prueba);
+
+  if (showParameters && parameterNames.length > 0) {
+    return parameterNames.join(", ");
+  }
+
+  if (description) {
+    return description;
+  }
+
+  return "";
+}
+
+function groupTestsForQuotation(pruebas: Prueba[] = []) {
+  const groupedMap: Record<string, any> = {};
+
+  for (const prueba of pruebas) {
+    const visibleDescription = prueba.visible_description ?? true;
+    const key = buildGroupedTestKey(
+      prueba.name,
+      prueba.description,
+      visibleDescription
+    );
+
+    if (!groupedMap[key]) {
+      groupedMap[key] = {
+        id: prueba.id,
+        name: prueba.name,
+        description: visibleDescription ? String(prueba.description || "") : "",
+        visible_description: visibleDescription,
+        items: [],
+      };
+    }
+
+    groupedMap[key].items.push(prueba);
+  }
+
+  return Object.values(groupedMap)
+    .map((group: any) => {
+      const isGrouped = group.items.length > 1;
+
+      return {
+        ...group,
+        items: [...group.items].sort((a: Prueba, b: Prueba) => {
+          const aLabel = buildVariantLabel(a, isGrouped);
+          const bLabel = buildVariantLabel(b, isGrouped);
+
+          return aLabel.localeCompare(bLabel, "es", { sensitivity: "base" });
+        }),
+      };
+    })
+    .sort((a: any, b: any) => {
+      const byName = String(a.name || "").localeCompare(String(b.name || ""), "es", {
+        sensitivity: "base",
+      });
+
+      if (byName !== 0) return byName;
+
+      return String(a.description || "").localeCompare(
+        String(b.description || ""),
+        "es",
+        { sensitivity: "base" }
+      );
+    });
+}
+
+function isSameGroupedTest(a: Prueba, b: Prueba) {
+  return (
+    buildGroupedTestKey(a.name, a.description, a.visible_description ?? true) ===
+    buildGroupedTestKey(b.name, b.description, b.visible_description ?? true)
+  );
+}
+
+function shouldShowVariantLabel(prueba: Prueba, pruebas: Prueba[]) {
+  const iguales = pruebas.filter((item) => isSameGroupedTest(item, prueba));
+  return iguales.length > 1;
+}
+
+function buildSummaryLabel(prueba: Prueba, pruebas: Prueba[]) {
+  const showVariant = shouldShowVariantLabel(prueba, pruebas);
+  return buildVariantLabel(prueba, showVariant);
+}
+
 export default function CotizadorPage() {
   const [paso, setPaso] = useState<1 | 2>(1);
   const [pruebas, setPruebas] = useState<Prueba[]>([]);
@@ -77,7 +204,15 @@ export default function CotizadorPage() {
 
   useEffect(() => {
     const fetchPruebas = async () => {
-      const { data, error } = await supabase.from("pruebas").select("*");
+      const { data, error } = await supabase
+        .from("pruebas")
+        .select(`
+          *,
+          parametros_prueba (
+            id,
+            name
+          )
+        `);
 
       if (error) {
         console.error("Error al cargar pruebas:", error);
@@ -91,16 +226,43 @@ export default function CotizadorPage() {
     fetchPruebas();
   }, []);
 
-  const pruebasFiltradas = useMemo(() => {
-    return pruebas.filter((p) =>
-      String(p.name || "")
-        .toLowerCase()
-        .includes(busqueda.toLowerCase())
-    );
+  const pruebasAgrupadas = useMemo(() => {
+    const q = busqueda.trim().toLowerCase();
+
+    const filtradas = pruebas.filter((p) => {
+      const name = String(p.name || "").toLowerCase();
+      const visibleDescription = p.visible_description ?? true;
+      const description =
+        visibleDescription ? String(p.description || "").toLowerCase() : "";
+      const parameterText = getSortedParameterNames(p).join(" ").toLowerCase();
+
+      return (
+        name.includes(q) ||
+        description.includes(q) ||
+        parameterText.includes(q)
+      );
+    });
+
+    return groupTestsForQuotation(filtradas);
   }, [pruebas, busqueda]);
 
+  const carritoIds = useMemo(() => {
+    return new Set(carrito.map((item) => String(item.id)));
+  }, [carrito]);
+  
   const agregar = (prueba: Prueba) => {
-    setCarrito((prev) => [...prev, prueba]);
+    const pruebaId = String(prueba.id);
+
+    setCarrito((prev) => {
+      const yaExiste = prev.some((item) => String(item.id) === pruebaId);
+
+      if (yaExiste) {
+        toast.error("Esta prueba ya fue agregada.");
+        return prev;
+      }
+
+      return [...prev, prueba];
+    });
   };
 
   const quitar = (index: number) => {
@@ -762,41 +924,89 @@ Total referencial: $${total.toFixed(2)}`;
 
             <div className="grid gap-8 md:grid-cols-2">
               <div className="max-h-[650px] space-y-4 overflow-y-auto pr-1">
-                {pruebasFiltradas.length > 0 ? (
-                  pruebasFiltradas.map((p, index) => (
+                {pruebasAgrupadas.length > 0 ? (
+                  pruebasAgrupadas.map((grupo, index) => (
                     <div
-                      key={p.id}
-                      className="flex items-center justify-between rounded-2xl p-4 shadow-sm"
+                      key={`${grupo.name}-${grupo.description}-${index}`}
+                      className="rounded-2xl p-4 shadow-sm"
                       style={{
                         backgroundColor:
-                          index % 2 === 0
-                            ? COLORS.primarySoft
-                            : COLORS.secondarySoft,
+                          index % 2 === 0 ? COLORS.primarySoft : COLORS.secondarySoft,
                         border: `1px solid ${COLORS.border}`,
                       }}
                     >
-                      <div>
-                        <h3
-                          className="font-semibold"
-                          style={{ color: COLORS.dark }}
-                        >
-                          {p.name}
+                      <div className="mb-3">
+                        <h3 className="font-semibold text-xl" style={{ color: COLORS.dark }}>
+                          {grupo.name}
                         </h3>
-                        <p
-                          className="text-sm"
-                          style={{ color: COLORS.textSoft }}
-                        >
-                          ${Number(p.price).toFixed(2)}
-                        </p>
+
+                        {grupo.visible_description && grupo.description?.trim() && (
+                          <p
+                            className="mt-1 text-sm leading-6"
+                            style={{ color: COLORS.textSoft }}
+                          >
+                            {grupo.description}
+                          </p>
+                        )}
                       </div>
 
-                      <button
-                        onClick={() => agregar(p)}
-                        className="rounded-xl px-3 py-2 text-sm text-white transition hover:opacity-95"
-                        style={{ backgroundColor: COLORS.primary }}
-                      >
-                        Agregar
-                      </button>
+                      <div className="space-y-2">
+                        {grupo.items.map((p: Prueba, itemIndex: number) => {
+                          const isGrouped = grupo.items.length > 1;
+                          const variantLabel = buildVariantLabel(p, isGrouped);
+                          const yaAgregada = carritoIds.has(String(p.id));
+
+                          return (
+                            <div
+                              key={`${p.id}-${itemIndex}`}
+                              className="flex items-center justify-between gap-4 rounded-xl px-4 py-4"
+                              style={{
+                                backgroundColor: COLORS.white,
+                                border: `1px solid ${COLORS.border}`,
+                                opacity: yaAgregada ? 0.7 : 1,
+                              }}
+                            >
+                              <div className="min-w-0">
+                                <p
+                                  className="text-sm font-semibold leading-6"
+                                  style={{ color: COLORS.dark }}
+                                >
+                                  {p.name}
+                                </p>
+
+                                {variantLabel.trim() && variantLabel.trim() !== String(p.name || "").trim() && (
+                                  <p
+                                    className="mt-1 text-sm leading-6"
+                                    style={{ color: COLORS.textSoft }}
+                                  >
+                                    {variantLabel}
+                                  </p>
+                                )}
+
+                                <p
+                                  className="mt-1 text-sm"
+                                  style={{ color: COLORS.textSoft }}
+                                >
+                                  ${Number(p.price).toFixed(2)}
+                                </p>
+                              </div>
+
+                              <button
+                                onClick={() => agregar(p)}
+                                disabled={yaAgregada}
+                                className="shrink-0 rounded-xl px-3 py-2 text-sm text-white transition"
+                                style={{
+                                  backgroundColor: yaAgregada ? COLORS.textSoft : COLORS.primary,
+                                  cursor: yaAgregada ? "not-allowed" : "pointer",
+                                  opacity: yaAgregada ? 0.85 : 1,
+                                }}
+                              >
+                                {yaAgregada ? "Agregada" : "Agregar"}
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
                   ))
                 ) : (
@@ -867,36 +1077,51 @@ Total referencial: $${total.toFixed(2)}`;
 
                 {carrito.length > 0 ? (
                   <div className="space-y-3">
-                    {carrito.map((item, i) => (
-                      <div
-                        key={`${item.id}-${i}`}
-                        className="flex items-center justify-between gap-3 border-b pb-2"
-                        style={{ borderColor: COLORS.border }}
-                      >
-                        <div>
-                          <p
-                            className="text-sm font-medium"
-                            style={{ color: COLORS.dark }}
-                          >
-                            {item.name}
-                          </p>
-                          <p
-                            className="text-sm"
-                            style={{ color: COLORS.textSoft }}
-                          >
-                            ${Number(item.price).toFixed(2)}
-                          </p>
-                        </div>
+                    {carrito.map((item, i) => {
+                      const resumenVariante = buildSummaryLabel(item, pruebas);
 
-                        <button
-                          onClick={() => quitar(i)}
-                          className="text-sm hover:underline"
-                          style={{ color: COLORS.danger }}
+                      return (
+                        <div
+                          key={`${item.id}-${i}`}
+                          className="flex items-start justify-between gap-3 border-b pb-3"
+                          style={{ borderColor: COLORS.border }}
                         >
-                          Quitar
-                        </button>
-                      </div>
-                    ))}
+                          <div className="min-w-0">
+                            <p
+                              className="text-sm font-medium"
+                              style={{ color: COLORS.dark }}
+                            >
+                              {item.name}
+                            </p>
+
+                            {resumenVariante.trim() &&
+                              resumenVariante.trim() !== String(item.name || "").trim() && (
+                                <p
+                                  className="mt-1 text-xs leading-5"
+                                  style={{ color: COLORS.textSoft }}
+                                >
+                                  {resumenVariante}
+                                </p>
+                              )}
+
+                            <p
+                              className="mt-1 text-sm"
+                              style={{ color: COLORS.textSoft }}
+                            >
+                              ${Number(item.price).toFixed(2)}
+                            </p>
+                          </div>
+
+                          <button
+                            onClick={() => quitar(i)}
+                            className="shrink-0 text-sm hover:underline"
+                            style={{ color: COLORS.danger }}
+                          >
+                            Quitar
+                          </button>
+                        </div>
+                      );
+                    })}
 
                     <div
                       className="flex justify-between pt-2 text-lg font-bold"

@@ -184,12 +184,23 @@ function normalizeExamName(value: any) {
   return String(value || '').trim().toLowerCase();
 }
 
-function normalizeExamDescription(value: any) {
-  return String(value || '').trim().toLowerCase();
+function normalizeExamDescription(
+  description: any,
+  visibleDescription: boolean | null | undefined
+) {
+  if (visibleDescription === false) return '';
+  return String(description || '').trim().toLowerCase();
 }
 
-function buildGroupedTestKey(name: any, description: any) {
-  return `${normalizeExamName(name)}|||${normalizeExamDescription(description)}`;
+function buildGroupedTestKey(
+  name: any,
+  description: any,
+  visibleDescription: boolean | null | undefined
+) {
+  return `${normalizeExamName(name)}|||${normalizeExamDescription(
+    description,
+    visibleDescription
+  )}`;
 }
 
 function groupTestsByName(details: any[] = []) {
@@ -199,15 +210,21 @@ function groupTestsByName(details: any[] = []) {
     const test = d?.pruebas;
     if (!test) return;
 
-    const key = buildGroupedTestKey(test.name, test.description);
+    const key = buildGroupedTestKey(
+      test.name,
+      test.description,
+      test.visible_description
+    );
     if (!key) return;
 
     if (!groupedMap[key]) {
+      const visibleDescription = test.visible_description ?? true;
+
       groupedMap[key] = {
         id: test.id,
         name: test.name,
-        description: test.description || '',
-        visible_description: test.visible_description ?? true,
+        description: visibleDescription ? test.description || '' : '',
+        visible_description: visibleDescription,
         test_ids: [],
         parametros_prueba: [],
         divisores: [],
@@ -281,7 +298,12 @@ function groupPdfResultsByTestName(
   resultados.forEach((res: any) => {
     const testName = String(res?.pruebas?.name || '').trim();
     const testDescription = String(res?.pruebas?.description || '').trim();
-    const key = buildGroupedTestKey(testName, testDescription);
+    const visibleDescription = res?.pruebas?.visible_description ?? true;
+    const key = buildGroupedTestKey(
+      testName,
+      testDescription,
+      visibleDescription
+    );
 
     if (!key) return;
 
@@ -290,8 +312,8 @@ function groupPdfResultsByTestName(
         id: res.id,
         testId: res.pruebas?.id || res.test_id || res.id,
         testName,
-        testDescription,
-        visible_description: res.pruebas?.visible_description ?? true,
+        testDescription: visibleDescription ? testDescription : '',
+        visible_description: visibleDescription,
         notes: res.notes || res.observacion || res.resultado_texto || '',
         date: res.date || null,
         details: [],
@@ -983,12 +1005,17 @@ export default function ResultsPage() {
       if (existingOrderResultsError) throw existingOrderResultsError;
 
       for (const test of orderDetails.tests) {
-        const groupedTestKey = buildGroupedTestKey(test.name, test.description);
+        const groupedTestKey = buildGroupedTestKey(
+          test.name,
+          test.description,
+          test.visible_description
+        );
 
         const matchingExistingResults = (existingOrderResults || []).filter((r: any) => {
           const existingKey = buildGroupedTestKey(
             r?.pruebas?.name,
-            r?.pruebas?.description
+            r?.pruebas?.description,
+            r?.pruebas?.visible_description
           );
           return existingKey === groupedTestKey;
         });
