@@ -163,7 +163,24 @@ export default function TestsPage() {
 
   const [saving, setSaving] = useState(false);
 
-  const filtered = tests.filter(t => t.name.toLowerCase().includes(search.toLowerCase()));
+  const filtered = tests.filter(t => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+
+    const matchTestName = String(t.name || '').toLowerCase().includes(q);
+    const matchDescription = String(t.description || '').toLowerCase().includes(q);
+
+    const matchParameters = (t.parameters || []).some((p: any) =>
+      String(p.name || '').toLowerCase().includes(q)
+    );
+
+    const matchDividers = (t.dividers || []).some((d: any) =>
+      String(d.texto || '').toLowerCase().includes(q)
+    );
+
+    return matchTestName || matchDescription || matchParameters || matchDividers;
+  });
+
   const selectedTest = tests.find(t => t.id === viewTest);
 
   const fetchData = async () => {
@@ -685,7 +702,7 @@ export default function TestsPage() {
         <Search className="absolute left-3 top-3 w-4 h-4 text-muted-foreground" />
         <Input
           className="pl-10"
-          placeholder="Buscar prueba..."
+          placeholder="Buscar prueba, descripción o parámetro..."
           value={search}
           onChange={e => setSearch(e.target.value)}
         />

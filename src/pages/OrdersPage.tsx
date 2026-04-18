@@ -72,7 +72,7 @@ type LabConfig = {
   legal_name?: string | null;
   email?: string | null;
 };
-
+type TestDiscountMap = Record<string, string>;
 type PaymentFormType = {
   amount: string;
   payment_method: string;
@@ -135,6 +135,16 @@ export default function OrdersPage() {
   const [tests, setTests] = useState<any[]>([]);
   const [doctors, setDoctors] = useState<any[]>([]);
   const [labConfig, setLabConfig] = useState<LabConfig | null>(null);
+
+  const [initialPaymentForm, setInitialPaymentForm] = useState<PaymentFormType>({
+    amount: '',
+    payment_method: 'EFECTIVO',
+    reference: '',
+    notes: '',
+  });
+
+  const [testDiscounts, setTestDiscounts] = useState<TestDiscountMap>({});
+  const [globalDiscount, setGlobalDiscount] = useState('');
 
   const [loading, setLoading] = useState(true);
   const [creating, setCreating] = useState(false);
@@ -418,6 +428,31 @@ export default function OrdersPage() {
     return patients.find((p) => p.id === selectedPatient) || null;
   }, [patients, selectedPatient]);
 
+  const getTestDiscount = (testId: string) => {
+    return round2(Math.max(safeNumber(testDiscounts[testId], 0), 0));
+  };
+
+  const getBaseSubtotalOfSelectedTests = () => {
+    return round2(
+      selectedTests.reduce((acc, testId) => {
+        const test = tests.find((t) => t.id === testId);
+        return acc + safeNumber(test?.price, 0);
+      }, 0)
+    );
+  };
+
+  const getTotalItemDiscount = () => {
+    return round2(
+      selectedTests.reduce((acc, testId) => {
+        return acc + getTestDiscount(testId);
+      }, 0)
+    );
+  };
+
+  const getSafeGlobalDiscount = () => {
+    return round2(Math.max(safeNumber(globalDiscount, 0), 0));
+  };
+
   const filteredPatients = useMemo(() => {
     const q = patientSearch.trim().toLowerCase();
     if (!q) return [];
@@ -450,26 +485,52 @@ export default function OrdersPage() {
   }, [tests, testSearch]);
 
   const selectedTestsSummary = useMemo(() => {
+    const baseSubtotal = getBaseSubtotalOfSelectedTests();
+    const totalItemDiscount = getTotalItemDiscount();
+    const safeGlobalDiscount = getSafeGlobalDiscount();
+
+    const maxGlobalDiscount = Math.max(baseSubtotal - totalItemDiscount, 0);
+    const appliedGlobalDiscount = round2(Math.min(safeGlobalDiscount, maxGlobalDiscount));
+
     return selectedTests
       .map((tid) => {
         const test = tests.find((t) => t.id === tid);
         if (!test) return null;
 
-        const precio = safeNumber(test.price);
-        const porcentajeIva = safeNumber(test.porcentaje_iva);
-        const subtotal = round2(precio);
-        const valorIva = round2(subtotal * (porcentajeIva / 100));
-        const totalLinea = round2(subtotal + valorIva);
+        const precio = round2(safeNumber(test.price));
+        const porcentajeIva = round2(safeNumber(test.porcentaje_iva, 0));
+        const descuentoItem = round2(Math.min(getTestDiscount(tid), precio));
+
+        const subtotalDespuesDescuentoItem = round2(Math.max(precio - descuentoItem, 0));
+
+        const proporcionGlobal =
+          maxGlobalDiscount > 0
+            ? subtotalDespuesDescuentoItem / maxGlobalDiscount
+            : 0;
+
+        const descuentoGlobalAsignado = round2(appliedGlobalDiscount * proporcionGlobal);
+
+        const subtotalSinImpuesto = round2(
+          Math.max(subtotalDespuesDescuentoItem - descuentoGlobalAsignado, 0)
+        );
+
+        const descuentoTotal = round2(descuentoItem + descuentoGlobalAsignado);
+        const valorIva = round2(subtotalSinImpuesto * (porcentajeIva / 100));
+        const totalLinea = round2(subtotalSinImpuesto + valorIva);
 
         return {
           ...test,
-          subtotal,
+          subtotalOriginal: precio,
+          descuentoItem,
+          descuentoGlobalAsignado,
+          descuentoTotal,
+          subtotal: subtotalSinImpuesto,
           valorIva,
           totalLinea,
         };
       })
       .filter(Boolean) as any[];
-  }, [selectedTests, tests]);
+  }, [selectedTests, tests, testDiscounts, globalDiscount]);
 
   const selectedTestsSummaryGrouped = useMemo(() => {
     const mapa = new Map<string, any>();
@@ -483,6 +544,8 @@ export default function OrdersPage() {
           id: key,
           name: nombre,
           cantidad: 0,
+          subtotalOriginal: 0,
+          descuentoTotal: 0,
           subtotal: 0,
           valorIva: 0,
           totalLinea: 0,
@@ -492,6 +555,8 @@ export default function OrdersPage() {
       const item = mapa.get(key);
 
       item.cantidad += 1;
+      item.subtotalOriginal += safeNumber(test.subtotalOriginal, 0);
+      item.descuentoTotal += safeNumber(test.descuentoTotal, 0);
       item.subtotal += safeNumber(test.subtotal, 0);
       item.valorIva += safeNumber(test.valorIva, 0);
       item.totalLinea += safeNumber(test.totalLinea, 0);
@@ -499,6 +564,8 @@ export default function OrdersPage() {
 
     return Array.from(mapa.values()).map((item) => ({
       ...item,
+      subtotalOriginal: round2(item.subtotalOriginal),
+      descuentoTotal: round2(item.descuentoTotal),
       subtotal: round2(item.subtotal),
       valorIva: round2(item.valorIva),
       totalLinea: round2(item.totalLinea),
@@ -506,15 +573,25 @@ export default function OrdersPage() {
   }, [selectedTestsSummary]);
 
   const resumenTotales = useMemo(() => {
+    const subtotalOriginal = round2(
+      selectedTestsSummary.reduce((acc, t) => acc + safeNumber(t.subtotalOriginal, 0), 0)
+    );
+
+    const descuento = round2(
+      selectedTestsSummary.reduce((acc, t) => acc + safeNumber(t.descuentoTotal, 0), 0)
+    );
+
     const subtotal = round2(
-      selectedTestsSummary.reduce((acc, t) => acc + safeNumber(t.subtotal), 0)
+      selectedTestsSummary.reduce((acc, t) => acc + safeNumber(t.subtotal, 0), 0)
     );
+
     const iva = round2(
-      selectedTestsSummary.reduce((acc, t) => acc + safeNumber(t.valorIva), 0)
+      selectedTestsSummary.reduce((acc, t) => acc + safeNumber(t.valorIva, 0), 0)
     );
+
     const total = round2(subtotal + iva);
 
-    return { subtotal, iva, total };
+    return { subtotalOriginal, descuento, subtotal, iva, total };
   }, [selectedTestsSummary]);
 
   const getParametrosPruebaOrdenados = (test: any) => {
@@ -995,6 +1072,37 @@ export default function OrdersPage() {
     }
   };
 
+  const generarFacturaElectronica = async (orderId: string) => {
+    const { data: facturaResp, error: facturaError } = await supabase.functions.invoke(
+      'generar-factura-electronica',
+      {
+        body: { order_id: orderId },
+      }
+    );
+
+    if (facturaError) {
+      throw new Error('Falló la comunicación con la facturación electrónica');
+    }
+
+    if (!facturaResp?.ok) {
+      const sriDetalle = facturaResp?.sri_mensajes
+        ?.map((m: any) =>
+          [m.identificador, m.mensaje, m.informacionAdicional]
+            .filter(Boolean)
+            .join(' - ')
+        )
+        .join(' | ');
+
+      throw new Error(
+        sriDetalle ||
+          facturaResp?.message ||
+          'No se pudo generar la factura electrónica'
+      );
+    }
+
+    return facturaResp;
+  };
+
   const handleCreate = async () => {
     if (!selectedPatient || selectedTests.length === 0) return;
 
@@ -1010,9 +1118,22 @@ export default function OrdersPage() {
       return;
     }
 
+    const initialAmount = round2(Number(initialPaymentForm.amount || 0));
+    const totalOrden = resumenTotales.total;
+
+    if (initialPaymentForm.amount && (!Number.isFinite(initialAmount) || initialAmount < 0)) {
+      toast.error('El monto del pago inicial no es válido');
+      return;
+    }
+
+    if (initialAmount > totalOrden) {
+      toast.error('El pago inicial no puede ser mayor al total de la orden');
+      return;
+    }
+
     setCreating(true);
 
-    const total = resumenTotales.total;
+    const total = totalOrden;
     const orderCode = generateOrderCode();
     const accessKey = generateAccessKey();
 
@@ -1023,26 +1144,21 @@ export default function OrdersPage() {
         tipo_identificacion:
           billingCustomer?.tipo_identificacion ||
           validacionFact.data.tipo_identificacion,
-        identificacion:
-          String(
-            billingCustomer?.identificacion || validacionFact.data.identificacion || ''
-          ).trim(),
-        nombres:
-          String(
-            billingCustomer?.nombres || validacionFact.data.nombres || ''
-          ).trim(),
-        direccion:
-          String(
-            billingCustomer?.direccion || validacionFact.data.direccion || ''
-          ).trim(),
-        telefono:
-          String(
-            billingCustomer?.telefono || validacionFact.data.telefono || ''
-          ).trim(),
-        email:
-          String(
-            billingCustomer?.email || validacionFact.data.email || ''
-          ).trim(),
+        identificacion: String(
+          billingCustomer?.identificacion || validacionFact.data.identificacion || ''
+        ).trim(),
+        nombres: String(
+          billingCustomer?.nombres || validacionFact.data.nombres || ''
+        ).trim(),
+        direccion: String(
+          billingCustomer?.direccion || validacionFact.data.direccion || ''
+        ).trim(),
+        telefono: String(
+          billingCustomer?.telefono || validacionFact.data.telefono || ''
+        ).trim(),
+        email: String(
+          billingCustomer?.email || validacionFact.data.email || ''
+        ).trim(),
       };
 
       const { data: order, error: orderError } = await supabase
@@ -1070,37 +1186,30 @@ export default function OrdersPage() {
 
       if (orderError) throw orderError;
 
-      for (const testId of selectedTests) {
-        const test = tests.find((t) => t.id === testId);
-        if (!test) continue;
-
-        const precio = round2(safeNumber(test.price));
-        const porcentajeIva = round2(safeNumber(test.porcentaje_iva, 0));
+      for (const summary of selectedTestsSummary) {
+        const porcentajeIva = round2(safeNumber(summary.porcentaje_iva, 0));
         const codigoPorcentajeIva = String(
-          test.codigo_porcentaje_iva || obtenerCodigoPorcentajeIva(porcentajeIva)
+          summary.codigo_porcentaje_iva || obtenerCodigoPorcentajeIva(porcentajeIva)
         );
-        const objetoImpuesto = String(test.objeto_impuesto || '2');
-
-        const subtotalSinImpuesto = round2(precio);
-        const valorIva = round2(subtotalSinImpuesto * (porcentajeIva / 100));
-        const totalLinea = round2(subtotalSinImpuesto + valorIva);
+        const objetoImpuesto = String(summary.objeto_impuesto || '2');
 
         const { error: detailError } = await supabase.from('orden_detalle').insert({
           order_id: order.id,
-          test_id: testId,
-          price: precio,
+          test_id: summary.id,
+          price: round2(safeNumber(summary.subtotalOriginal, 0)),
+          descuento: round2(safeNumber(summary.descuentoTotal, 0)),
           porcentaje_iva: porcentajeIva,
           codigo_porcentaje_iva: codigoPorcentajeIva,
           objeto_impuesto: objetoImpuesto,
-          subtotal_sin_impuesto: subtotalSinImpuesto,
-          valor_iva: valorIva,
-          total_linea: totalLinea,
+          subtotal_sin_impuesto: round2(safeNumber(summary.subtotal, 0)),
+          valor_iva: round2(safeNumber(summary.valorIva, 0)),
+          total_linea: round2(safeNumber(summary.totalLinea, 0)),
         });
 
         if (detailError) throw detailError;
 
-        if (test.prueba_reactivos) {
-          for (const tr of test.prueba_reactivos) {
+        if (summary.prueba_reactivos) {
+          for (const tr of summary.prueba_reactivos) {
             const { error: stockError } = await supabase.rpc('decrement_reagent_stock', {
               row_id: tr.reagent_id,
               amount: tr.quantity_used,
@@ -1111,41 +1220,36 @@ export default function OrdersPage() {
         }
       }
 
-      const { data: facturaResp, error: facturaError } = await supabase.functions.invoke(
-        'generar-factura-electronica',
-        {
-          body: { order_id: order.id },
-        }
-      );
+      if (initialAmount > 0) {
+        const { error: paymentError } = await supabase.from('orden_pagos').insert([
+          {
+            order_id: order.id,
+            amount: initialAmount,
+            payment_method: initialPaymentForm.payment_method,
+            reference: initialPaymentForm.reference.trim() || null,
+            notes: initialPaymentForm.notes.trim() || null,
+          },
+        ]);
 
-      if (facturaError) {
-        console.error('Error facturación:', facturaError);
-        toast.error('Orden creada, pero falló la comunicación con la facturación electrónica');
-      } else if (!facturaResp?.ok) {
-        console.error('Respuesta facturación:', facturaResp);
+        if (paymentError) throw paymentError;
+      }
 
-        const sriDetalle = facturaResp?.sri_mensajes
-          ?.map((m: any) =>
-            [m.identificador, m.mensaje, m.informacionAdicional]
-              .filter(Boolean)
-              .join(' - ')
-          )
-          .join(' | ');
+      let facturaResp: any = null;
+      const saldoDespuesPago = round2(Math.max(total - initialAmount, 0));
+      const pagoCompletoInicial = initialAmount > 0 && saldoDespuesPago <= 0;
 
-        if (facturaResp?.sri_estado === 'EN_PROCESAMIENTO') {
-          toast.info(
-            sriDetalle ||
-              facturaResp?.message ||
-              'La factura fue enviada al SRI y sigue en procesamiento. No se reenviará; luego debe reconsultarse la autorización.'
-          );
-        } else {
-          toast.error(
-            sriDetalle ||
-              facturaResp?.message ||
-              'Orden creada, pero no se generó la factura'
+      if (pagoCompletoInicial) {
+        try {
+          facturaResp = await generarFacturaElectronica(order.id);
+        } catch (facturaError: any) {
+          toast.warning(
+            'La orden y el pago fueron registrados, pero no se pudo generar la factura electrónica: ' +
+              (facturaError?.message || 'desconocido')
           );
         }
-      } else {
+      }
+
+      if (pagoCompletoInicial && facturaResp) {
         const facturaAutorizada =
           facturaResp?.sri_estado === 'AUTORIZADO' ||
           facturaResp?.factura_estado === 'AUTORIZADO' ||
@@ -1155,7 +1259,12 @@ export default function OrdersPage() {
           billingDataToUse.tipo_identificacion === 'CONSUMIDOR_FINAL' ||
           billingDataToUse.identificacion === '9999999999999';
 
-        if (facturaAutorizada) {
+        if (facturaResp?.sri_estado === 'EN_PROCESAMIENTO') {
+          toast.info(
+            facturaResp?.message ||
+              'Orden creada, pago completo registrado y factura enviada al SRI en procesamiento.'
+          );
+        } else if (facturaAutorizada) {
           if (
             !esConsumidorFinal &&
             billingDataToUse.email &&
@@ -1170,7 +1279,9 @@ export default function OrdersPage() {
                 pdfPath: facturaResp.factura_ride_pdf_path,
               });
 
-              toast.success('Orden y factura generadas correctamente. La factura fue enviada por correo.');
+              toast.success(
+                'Orden creada, pago completo registrado y factura enviada por correo.'
+              );
             } catch (emailError: any) {
               toast.warning(
                 'La factura fue autorizada, pero no se pudo enviar por correo: ' +
@@ -1178,11 +1289,15 @@ export default function OrdersPage() {
               );
             }
           } else {
-            toast.success('Orden y factura generadas correctamente.');
+            toast.success('Orden creada, pago completo registrado y factura generada.');
           }
         } else {
-          toast.success('Orden creada correctamente');
+          toast.success('Orden creada y pago completo registrado.');
         }
+      } else if (initialAmount > 0) {
+        toast.success('Orden creada y pago inicial registrado correctamente.');
+      } else {
+        toast.success('Orden creada correctamente.');
       }
 
       setDialogOpen(false);
@@ -1191,12 +1306,20 @@ export default function OrdersPage() {
       setSelectedTests([]);
       setPatientSearch('');
       setTestSearch('');
+      setTestDiscounts({});
+      setGlobalDiscount('');
       resetBillingSection();
-      await fetchInitialData();
+      setInitialPaymentForm({
+        amount: '',
+        payment_method: 'EFECTIVO',
+        reference: '',
+        notes: '',
+      });
 
-      if (confirm('¿Desea imprimir el ticket de recepción?')) {
-        printThermalTicket(order.id);
-      }
+      await fetchInitialData();
+      
+      printThermalTicket(order.id);
+      
     } catch (error: any) {
       toast.error('Error al crear orden: ' + error.message);
     } finally {
@@ -1328,6 +1451,37 @@ export default function OrdersPage() {
     setPaymentDialogOpen(true);
   };
 
+  const generarFacturaElectronicaAlPagar = async (orderId: string) => {
+    const { data: facturaResp, error: facturaError } = await supabase.functions.invoke(
+      'generar-factura-electronica',
+      {
+        body: { order_id: orderId },
+      }
+    );
+
+    if (facturaError) {
+      throw new Error('Falló la comunicación con la facturación electrónica');
+    }
+
+    if (!facturaResp?.ok) {
+      const sriDetalle = facturaResp?.sri_mensajes
+        ?.map((m: any) =>
+          [m.identificador, m.mensaje, m.informacionAdicional]
+            .filter(Boolean)
+            .join(' - ')
+        )
+        .join(' | ');
+
+      throw new Error(
+        sriDetalle ||
+          facturaResp?.message ||
+          'No se pudo generar la factura electrónica'
+      );
+    }
+
+    return facturaResp;
+  };
+
   const handleSavePayment = async () => {
     if (!paymentOrder) return;
 
@@ -1335,6 +1489,8 @@ export default function OrdersPage() {
     const total = safeNumber(paymentOrder.total, 0);
     const paidAmount = safeNumber(paymentOrder.paid_amount, 0);
     const saldo = round2(Math.max(total - paidAmount, 0));
+    const saldoDespuesPago = round2(Math.max(saldo - amount, 0));
+    const completaPago = saldo > 0 && saldoDespuesPago <= 0;
 
     if (!amount || amount <= 0) {
       toast.error('Ingrese un monto válido');
@@ -1361,8 +1517,24 @@ export default function OrdersPage() {
 
       if (error) throw error;
 
-      toast.success('Pago registrado correctamente');
       setPaymentDialogOpen(false);
+
+      let facturaResp: any = null;
+
+      if (completaPago) {
+        try {
+          facturaResp = await generarFacturaElectronicaAlPagar(paymentOrder.id);
+        } catch (facturaGenError: any) {
+          await fetchInitialData();
+
+          toast.warning(
+            'Pago registrado correctamente, pero no se pudo generar la factura electrónica: ' +
+              (facturaGenError?.message || 'desconocido')
+          );
+        }
+      } else {
+        toast.success('Pago registrado correctamente');
+      }
 
       await fetchInitialData();
 
@@ -1388,6 +1560,53 @@ export default function OrdersPage() {
         const totalNuevo = Number(updatedOrder.total || 0);
         const pagadoNuevo = Number(updatedOrder.paid_amount || 0);
         const saldoNuevo = Math.max(totalNuevo - pagadoNuevo, 0);
+
+        if (completaPago) {
+          const facturaAutorizada =
+            facturaResp?.sri_estado === 'AUTORIZADO' ||
+            facturaResp?.factura_estado === 'AUTORIZADO' ||
+            facturaResp?.autorizado === true;
+
+          const esConsumidorFinal =
+            updatedOrder.factura_tipo_identificacion === 'CONSUMIDOR_FINAL' ||
+            updatedOrder.factura_identificacion === '9999999999999';
+
+          if (facturaResp?.sri_estado === 'EN_PROCESAMIENTO') {
+            toast.info(
+              facturaResp?.message ||
+                'Pago completado. La factura fue enviada al SRI y sigue en procesamiento.'
+            );
+          } else if (facturaAutorizada) {
+            if (
+              !esConsumidorFinal &&
+              updatedOrder.factura_email &&
+              facturaResp?.factura_ride_pdf_path &&
+              facturaResp?.numero_factura
+            ) {
+              try {
+                await enviarFacturaPorCorreo({
+                  to: updatedOrder.factura_email,
+                  numeroFactura: facturaResp.numero_factura,
+                  clienteNombre: updatedOrder.factura_nombres,
+                  pdfPath: facturaResp.factura_ride_pdf_path,
+                });
+
+                toast.success(
+                  'Pago completado, factura generada correctamente y enviada por correo.'
+                );
+              } catch (emailError: any) {
+                toast.warning(
+                  'La factura fue autorizada, pero no se pudo enviar por correo: ' +
+                    (emailError?.message || 'desconocido')
+                );
+              }
+            } else {
+              toast.success('Pago completado y factura generada correctamente.');
+            }
+          } else if (saldoAnterior > 0 && saldoNuevo <= 0) {
+            toast.success('Pago completado correctamente.');
+          }
+        }
 
         if (
           updatedOrder.status === 'completed' &&
@@ -1417,7 +1636,7 @@ export default function OrdersPage() {
                 filename: `resultados_${updatedOrder.code}.pdf`,
               });
 
-              toast.success('Pago completado y resultados enviados al paciente');
+              toast.success('Resultados enviados al paciente');
             }
           } catch (emailError: any) {
             toast.error(
@@ -2430,40 +2649,250 @@ export default function OrdersPage() {
               </div>
 
               {selectedTestsSummary.length > 0 && (
-                <div className="rounded-2xl border border-primary/10 bg-primary/5 p-4 space-y-2">
+                <div className="rounded-2xl border border-primary/10 bg-primary/5 p-4 space-y-4">
                   <div className="flex justify-between text-sm">
                     <span className="font-semibold text-primary italic">
                       {selectedTestsSummary.length} pruebas seleccionadas
                     </span>
                     <span className="font-semibold">
-                      Subtotal: ${resumenTotales.subtotal.toFixed(2)}
+                      Subtotal original: ${resumenTotales.subtotalOriginal.toFixed(2)}
                     </span>
                   </div>
 
-                  <div className="space-y-1">
-                    {selectedTestsSummaryGrouped.map((t) => (
-                      <div key={t.id} className="flex items-center justify-between text-sm">
-                        <span>
-                          {t.name}
-                          {t.cantidad > 1 }
-                        </span>
-                        <span>
-                          ${Number(t.subtotal).toFixed(2)} + IVA ${Number(t.valorIva).toFixed(2)}
-                        </span>
+                  <div className="space-y-3">
+                    {selectedTestsSummary.map((t) => (
+                      <div
+                        key={`${t.id}-${t.totalLinea}`}
+                        className="rounded-xl border border-white/70 bg-white/80 p-3 space-y-2"
+                      >
+                        <div className="flex items-center justify-between gap-3">
+                          <div>
+                            <div className="font-semibold text-slate-800">{t.name}</div>
+                            <div className="text-xs text-slate-500">
+                              IVA {Number(t.porcentaje_iva || 0).toFixed(2)}%
+                            </div>
+                          </div>
+
+                          <div className="text-sm font-bold text-slate-700">
+                            ${Number(t.subtotalOriginal || 0).toFixed(2)}
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          <div className="space-y-1">
+                            <Label className="text-[11px] font-semibold uppercase tracking-wider">
+                              Descuento de esta prueba
+                            </Label>
+                            <Input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              max={Number(t.subtotalOriginal || 0)}
+                              value={testDiscounts[t.id] || ''}
+                              onChange={(e) =>
+                                setTestDiscounts((prev) => ({
+                                  ...prev,
+                                  [t.id]: e.target.value,
+                                }))
+                              }
+                              placeholder="0.00"
+                              className="bg-white"
+                            />
+                          </div>
+
+                          <div className="rounded-lg border bg-slate-50 px-3 py-2 text-sm space-y-1">
+                            <div className="flex justify-between">
+                              <span>Descuento aplicado</span>
+                              <span>${Number(t.descuentoTotal || 0).toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span>Base imponible</span>
+                              <span>${Number(t.subtotal || 0).toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between">
+                              <span>IVA</span>
+                              <span>${Number(t.valorIva || 0).toFixed(2)}</span>
+                            </div>
+                            <div className="flex justify-between font-semibold text-primary border-t pt-1">
+                              <span>Total línea</span>
+                              <span>${Number(t.totalLinea || 0).toFixed(2)}</span>
+                            </div>
+                          </div>
+                        </div>
                       </div>
                     ))}
                   </div>
 
-                  <div className="flex justify-between text-sm pt-2 border-t">
-                    <span>IVA total</span>
-                    <span>${resumenTotales.iva.toFixed(2)}</span>
-                  </div>
+                  <div className="rounded-xl border bg-white p-4 space-y-3">
+                    <div className="space-y-2">
+                      <Label className="font-semibold text-xs uppercase tracking-wider">
+                        Descuento global adicional
+                      </Label>
+                      <Input
+                        type="number"
+                        step="0.01"
+                        min="0"
+                        value={globalDiscount}
+                        onChange={(e) => setGlobalDiscount(e.target.value)}
+                        placeholder="0.00"
+                        className="bg-white"
+                      />
+                    </div>
 
-                  <div className="flex justify-between items-center">
-                    <span className="text-sm font-bold text-primary">Total</span>
-                    <span className="text-xl font-display font-black text-primary">
-                      ${resumenTotales.total.toFixed(2)}
-                    </span>
+                    <div className="flex justify-between text-sm">
+                      <span>Subtotal original</span>
+                      <span>${resumenTotales.subtotalOriginal.toFixed(2)}</span>
+                    </div>
+
+                    <div className="flex justify-between text-sm">
+                      <span>Descuento total</span>
+                      <span>${resumenTotales.descuento.toFixed(2)}</span>
+                    </div>
+
+                    <div className="flex justify-between text-sm">
+                      <span>Subtotal neto</span>
+                      <span>${resumenTotales.subtotal.toFixed(2)}</span>
+                    </div>
+
+                    <div className="flex justify-between text-sm">
+                      <span>IVA total</span>
+                      <span>${resumenTotales.iva.toFixed(2)}</span>
+                    </div>
+
+                    <div className="flex justify-between items-center border-t pt-2">
+                      <span className="text-sm font-bold text-primary">Total</span>
+                      <span className="text-xl font-display font-black text-primary">
+                        ${resumenTotales.total.toFixed(2)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+              {selectedTestsSummary.length > 0 && (
+                <div className="space-y-3">
+                  <Label className="text-xs font-bold uppercase tracking-wide text-slate-700">
+                    Pago inicial (opcional)
+                  </Label>
+
+                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-4">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label className="font-semibold text-xs uppercase tracking-wider">
+                          Monto a pagar ahora
+                        </Label>
+                        <Input
+                          type="number"
+                          step="0.01"
+                          min="0"
+                          max={resumenTotales.total}
+                          value={initialPaymentForm.amount}
+                          onChange={(e) =>
+                            setInitialPaymentForm((f) => ({
+                              ...f,
+                              amount: e.target.value,
+                            }))
+                          }
+                          placeholder="0.00"
+                          className="bg-white"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="font-semibold text-xs uppercase tracking-wider">
+                          Método de pago
+                        </Label>
+                        <Select
+                          value={initialPaymentForm.payment_method}
+                          onValueChange={(v) =>
+                            setInitialPaymentForm((f) => ({
+                              ...f,
+                              payment_method: v,
+                            }))
+                          }
+                        >
+                          <SelectTrigger className="bg-white">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="EFECTIVO">Efectivo</SelectItem>
+                            <SelectItem value="TRANSFERENCIA">Transferencia</SelectItem>
+                            <SelectItem value="TARJETA">Tarjeta</SelectItem>
+                            <SelectItem value="DEPOSITO">Depósito</SelectItem>
+                            <SelectItem value="OTRO">Otro</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <div className="space-y-2">
+                        <Label className="font-semibold text-xs uppercase tracking-wider">
+                          Referencia
+                        </Label>
+                        <Input
+                          value={initialPaymentForm.reference}
+                          onChange={(e) =>
+                            setInitialPaymentForm((f) => ({
+                              ...f,
+                              reference: e.target.value,
+                            }))
+                          }
+                          placeholder="Voucher, transferencia, etc."
+                          className="bg-white"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="font-semibold text-xs uppercase tracking-wider">
+                          Observación
+                        </Label>
+                        <Input
+                          value={initialPaymentForm.notes}
+                          onChange={(e) =>
+                            setInitialPaymentForm((f) => ({
+                              ...f,
+                              notes: e.target.value,
+                            }))
+                          }
+                          placeholder="Opcional"
+                          className="bg-white"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="rounded-xl border bg-white p-4 text-sm space-y-2">
+                      <div className="flex justify-between">
+                        <span>Total de la orden</span>
+                        <span className="font-semibold">${resumenTotales.total.toFixed(2)}</span>
+                      </div>
+
+                      <div className="flex justify-between">
+                        <span>Pago inicial</span>
+                        <span className="font-semibold">
+                          ${round2(Number(initialPaymentForm.amount || 0)).toFixed(2)}
+                        </span>
+                      </div>
+
+                      <div className="flex justify-between border-t pt-2">
+                        <span>Saldo pendiente</span>
+                        <span className="font-bold text-primary">
+                          $
+                          {round2(
+                            Math.max(
+                              resumenTotales.total - round2(Number(initialPaymentForm.amount || 0)),
+                              0
+                            )
+                          ).toFixed(2)}
+                        </span>
+                      </div>
+
+                      {round2(Number(initialPaymentForm.amount || 0)) >= resumenTotales.total &&
+                        resumenTotales.total > 0 && (
+                          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
+                            Con este pago la orden quedará completamente cancelada y se enviará a facturación electrónica.
+                          </div>
+                        )}
+                    </div>
                   </div>
                 </div>
               )}
@@ -2481,7 +2910,7 @@ export default function OrdersPage() {
                     Generando...
                   </>
                 ) : (
-                  'Generar Orden'
+                  'Crear Orden'
                 )}
               </Button>
             </div>
