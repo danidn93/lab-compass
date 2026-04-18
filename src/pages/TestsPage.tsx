@@ -154,8 +154,8 @@ export default function TestsPage() {
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [price, setPrice] = useState('');
-  const [porcentajeIva, setPorcentajeIva] = useState('15');
-  const [objetoImpuesto, setObjetoImpuesto] = useState('2');
+  const [porcentajeIva, setPorcentajeIva] = useState('0');
+  const [objetoImpuesto, setObjetoImpuesto] = useState('0');
   const [structureItems, setStructureItems] = useState<StructureItem[]>([createParameterItem()]);
   const [openParamId, setOpenParamId] = useState<string | null>(null);
   const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
@@ -225,8 +225,8 @@ export default function TestsPage() {
     setName('');
     setDescription('');
     setPrice('');
-    setPorcentajeIva('15');
-    setObjetoImpuesto('2');
+    setPorcentajeIva('0');
+    setObjetoImpuesto('0');
     setVisibleDescription(true);
     setStructureItems([firstItem]);
     setOpenParamId(firstItem.id);
@@ -961,7 +961,7 @@ export default function TestsPage() {
                   <SelectTrigger>
                     <SelectValue placeholder="Seleccione IVA" />
                   </SelectTrigger>
-                  <SelectContent>
+                  <SelectContent defaultValue="0">
                     <SelectItem value="0">0%</SelectItem>
                     <SelectItem value="5">5%</SelectItem>
                     <SelectItem value="12">12%</SelectItem>

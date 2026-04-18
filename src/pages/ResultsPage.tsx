@@ -72,6 +72,22 @@ function emptyEntryValue(): EntryValueItem {
   };
 }
 
+function isEntryValueEmpty(entry?: Partial<EntryValueItem> | null): boolean {
+  if (!entry) return true;
+
+  const valueNumeric = String(entry.value_numeric ?? '').trim();
+  const valueBoolean = String(entry.value_boolean ?? '').trim();
+  const valueText = String(entry.value_text ?? '').trim();
+  const observation = String(entry.observation ?? '').trim();
+
+  return (
+    valueNumeric === '' &&
+    valueBoolean === '' &&
+    valueText === '' &&
+    observation === ''
+  );
+}
+
 function safeFileNamePart(value: any): string {
   return String(value ?? '')
     .normalize('NFD')
@@ -293,14 +309,40 @@ function groupPdfResultsByTestName(
         sort_order: d.sort_order ?? null,
       }));
 
-    dividers.forEach((divider: any) => {
-      const exists = targetDetails.some((x: any) => x.id === divider.id);
-      if (!exists) {
-        targetDetails.push(divider);
-      }
-    });
-
     (res.resultado_detalle || []).forEach((det: any) => {
+      const resultType = getResultType(det);
+
+      const hasNumeric =
+        det.value_numeric !== null &&
+        det.value_numeric !== undefined &&
+        String(det.value_numeric).trim() !== '';
+
+      const hasBoolean =
+        det.value_boolean !== null &&
+        det.value_boolean !== undefined;
+
+      const hasText =
+        String(det.value_text || '').trim() !== '';
+
+      const hasObservation =
+        String(det.observation || '').trim() !== '';
+
+      const hasVisibleValue =
+        (resultType === 'numeric' && hasNumeric) ||
+        (resultType === 'boolean' && hasBoolean) ||
+        (resultType === 'text' && hasText);
+
+      if (!hasVisibleValue && !hasObservation) {
+        return;
+      }
+
+      dividers.forEach((divider: any) => {
+        const exists = targetDetails.some((x: any) => x.id === divider.id);
+        if (!exists) {
+          targetDetails.push(divider);
+        }
+      });
+
       const parameterId = det.parametros_prueba?.id || det.parameter_id || null;
       const parameterName =
         det.parametros_prueba?.name || det.name || det.parametro || 'Resultado';
@@ -326,7 +368,7 @@ function groupPdfResultsByTestName(
           unit: getDisplayUnit(det),
           status: det.status || 'normal',
           observation: det.observation || '',
-          resultType: getResultType(det),
+          resultType,
         });
       }
     });
@@ -341,9 +383,8 @@ function groupPdfResultsByTestName(
   });
 
   return Object.values(groupedMap)
-    .map((group: any) => ({
-      ...group,
-      details: [...(group.details || [])].sort((a: any, b: any) => {
+    .map((group: any) => {
+      const sortedDetails = [...(group.details || [])].sort((a: any, b: any) => {
         const aSort = Number.isFinite(Number(a?.sort_order))
           ? Number(a.sort_order)
           : Number.MAX_SAFE_INTEGER;
@@ -361,8 +402,34 @@ function groupPdfResultsByTestName(
         return String(aLabel).localeCompare(String(bLabel), 'es', {
           sensitivity: 'base',
         });
-      }),
-    }))
+      });
+
+      const cleanedDetails: any[] = [];
+      let pendingDividers: any[] = [];
+
+      sortedDetails.forEach((item: any) => {
+        if (item.item_type === 'divider') {
+          pendingDividers.push(item);
+          return;
+        }
+
+        cleanedDetails.push(...pendingDividers, item);
+        pendingDividers = [];
+      });
+
+      return {
+        ...group,
+        details: cleanedDetails,
+      };
+    })
+    .filter((group: any) => {
+      const hasNotes = String(group.notes || '').trim() !== '';
+      const hasParameterDetails = (group.details || []).some(
+        (item: any) => item.item_type === 'parameter'
+      );
+
+      return hasNotes || hasParameterDetails;
+    })
     .sort((a: any, b: any) => {
       const byName = String(a.testName || '').localeCompare(String(b.testName || ''), 'es', {
         sensitivity: 'base',
@@ -614,43 +681,6 @@ export default function ResultsPage() {
     if (!resultDate) {
       toast.error('Debes indicar la fecha del resultado');
       return false;
-    }
-
-    for (const test of orderDetails.tests) {
-      for (const structureItem of test.structure_items || []) {
-        if (structureItem.item_type !== 'parameter') continue;
-
-        const param = structureItem.parameter;
-        const entryItem = entryValues[param.id] || emptyEntryValue();
-        const resultType: ResultType = param.result_type || 'numeric';
-
-        if (resultType === 'numeric') {
-          if (entryItem.value_numeric === '') {
-            toast.error(`Falta ingresar el valor de "${param.name}" en ${test.name}`);
-            return false;
-          }
-
-          const n = Number(entryItem.value_numeric);
-          if (!Number.isFinite(n)) {
-            toast.error(`El valor de "${param.name}" no es válido`);
-            return false;
-          }
-        }
-
-        if (resultType === 'boolean') {
-          if (entryItem.value_boolean === '') {
-            toast.error(`Falta seleccionar el valor de "${param.name}" en ${test.name}`);
-            return false;
-          }
-        }
-
-        if (resultType === 'text') {
-          if (!entryItem.value_text.trim()) {
-            toast.error(`Falta ingresar el texto de "${param.name}" en ${test.name}`);
-            return false;
-          }
-        }
-      }
     }
 
     return true;
@@ -1031,6 +1061,11 @@ export default function ResultsPage() {
           .map((structureItem: any) => {
             const param = structureItem.parameter;
             const entryItem = entryValues[param.id] || emptyEntryValue();
+
+            if (isEntryValueEmpty(entryItem)) {
+              return null;
+            }
+
             const resultType: ResultType = param.result_type || 'numeric';
             const range =
               resultType === 'numeric' ? getAppliedRange(param, orderDetails.pacientes) : null;
@@ -1043,21 +1078,39 @@ export default function ResultsPage() {
             let applied_range_max: number | null = null;
 
             if (resultType === 'numeric') {
-              value_numeric = Number(entryItem.value_numeric);
-              status = classifyNumericValue(value_numeric, range);
-              applied_range_min = range?.min ?? null;
-              applied_range_max = range?.max ?? null;
+              const rawNumeric = String(entryItem.value_numeric ?? '').trim();
+
+              if (rawNumeric !== '') {
+                value_numeric = Number(rawNumeric);
+
+                if (Number.isFinite(value_numeric)) {
+                  status = classifyNumericValue(value_numeric, range);
+                  applied_range_min = range?.min ?? null;
+                  applied_range_max = range?.max ?? null;
+                } else {
+                  value_numeric = null;
+                }
+              }
             }
 
             if (resultType === 'boolean') {
-              value_boolean = entryItem.value_boolean === 'true';
-              status = value_boolean ? 'positive' : 'negative';
+              if (entryItem.value_boolean !== '') {
+                value_boolean = entryItem.value_boolean === 'true';
+                status = value_boolean ? 'positive' : 'negative';
+              }
             }
 
             if (resultType === 'text') {
-              value_text = entryItem.value_text.trim();
-              status = 'text';
+              const trimmedText = String(entryItem.value_text ?? '').trim();
+              if (trimmedText) {
+                value_text = trimmedText;
+                status = 'text';
+              }
             }
+
+            const trimmedObservation = param.allow_observation
+              ? String(entryItem.observation ?? '').trim()
+              : '';
 
             return {
               result_id: resultId,
@@ -1065,18 +1118,21 @@ export default function ResultsPage() {
               value_numeric,
               value_boolean,
               value_text,
-              observation: param.allow_observation ? entryItem.observation.trim() || null : null,
+              observation: trimmedObservation || null,
               status,
               applied_range_min,
               applied_range_max,
             };
-          });
+          })
+          .filter(Boolean);
 
-        const { error: detError } = await supabase
-          .from('resultado_detalle')
-          .insert(detailsToInsert);
+        if (detailsToInsert.length > 0) {
+          const { error: detError } = await supabase
+            .from('resultado_detalle')
+            .insert(detailsToInsert);
 
-        if (detError) throw detError;
+          if (detError) throw detError;
+        }
       }
 
       const { error: updateOrderError } = await supabase
