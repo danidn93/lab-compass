@@ -97,11 +97,26 @@ function safeFileNamePart(value: any): string {
     .slice(0, 80);
 }
 
-function compareBySortOrderThenName(a: any, b: any) {
-  const aSort = Number.isFinite(Number(a?.sort_order)) ? Number(a.sort_order) : Number.MAX_SAFE_INTEGER;
-  const bSort = Number.isFinite(Number(b?.sort_order)) ? Number(b.sort_order) : Number.MAX_SAFE_INTEGER;
+function compareBySortOrderThenIndex(a: any, b: any) {
+  const aSort = Number.isFinite(Number(a?.sort_order))
+    ? Number(a.sort_order)
+    : Number.MAX_SAFE_INTEGER;
+
+  const bSort = Number.isFinite(Number(b?.sort_order))
+    ? Number(b.sort_order)
+    : Number.MAX_SAFE_INTEGER;
 
   if (aSort !== bSort) return aSort - bSort;
+
+  const aIndex = Number.isFinite(Number(a?._original_index))
+    ? Number(a._original_index)
+    : Number.MAX_SAFE_INTEGER;
+
+  const bIndex = Number.isFinite(Number(b?._original_index))
+    ? Number(b._original_index)
+    : Number.MAX_SAFE_INTEGER;
+
+  if (aIndex !== bIndex) return aIndex - bIndex;
 
   return String(a?.name || '').localeCompare(String(b?.name || ''), 'es', {
     sensitivity: 'base',
@@ -109,7 +124,7 @@ function compareBySortOrderThenName(a: any, b: any) {
 }
 
 function sortParametersForDisplay(params: any[] = []) {
-  return [...params].sort(compareBySortOrderThenName);
+  return [...params].sort(compareBySortOrderThenIndex);
 }
 
 function buildMixedTestStructure(
@@ -123,7 +138,10 @@ function buildMixedTestStructure(
     sort_order: Number.isFinite(Number(param?.sort_order))
       ? Number(param.sort_order)
       : Number.MAX_SAFE_INTEGER,
-  }));
+    _original_index: Number.isFinite(Number(param?._original_index))
+      ? Number(param._original_index)
+      : Number.MAX_SAFE_INTEGER,
+  })) as any;
 
   const dividerItems: DividerDisplayItem[] = [...(divisores || [])]
     .filter((d: any) => d.activo !== false)
@@ -134,10 +152,22 @@ function buildMixedTestStructure(
       sort_order: Number.isFinite(Number(divider?.sort_order))
         ? Number(divider.sort_order)
         : Number.MAX_SAFE_INTEGER,
-    }));
+      _original_index: Number.isFinite(Number(divider?._original_index))
+        ? Number(divider._original_index)
+        : Number.MAX_SAFE_INTEGER,
+    })) as any;
 
-  return [...parameterItems, ...dividerItems].sort((a, b) => {
+  return [...parameterItems, ...dividerItems].sort((a: any, b: any) => {
     if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
+
+    const aIndex = Number.isFinite(Number(a?._original_index))
+      ? Number(a._original_index)
+      : Number.MAX_SAFE_INTEGER;
+    const bIndex = Number.isFinite(Number(b?._original_index))
+      ? Number(b._original_index)
+      : Number.MAX_SAFE_INTEGER;
+
+    if (aIndex !== bIndex) return aIndex - bIndex;
 
     if (a.item_type !== b.item_type) {
       return a.item_type === 'divider' ? -1 : 1;
@@ -205,8 +235,9 @@ function buildGroupedTestKey(
 
 function groupTestsByName(details: any[] = []) {
   const groupedMap: Record<string, any> = {};
+  const groupedList: any[] = [];
 
-  details.forEach((d: any) => {
+  details.forEach((d: any, detailIndex: number) => {
     const test = d?.pruebas;
     if (!test) return;
 
@@ -229,7 +260,10 @@ function groupTestsByName(details: any[] = []) {
         parametros_prueba: [],
         divisores: [],
         structure_items: [],
+        _original_index: detailIndex,
       };
+
+      groupedList.push(groupedMap[key]);
     }
 
     const group = groupedMap[key];
@@ -238,53 +272,65 @@ function groupTestsByName(details: any[] = []) {
       group.test_ids.push(test.id);
     }
 
-    (test.parametros_prueba || []).forEach((param: any) => {
+    (test.parametros_prueba || []).forEach((param: any, paramIndex: number) => {
       const alreadyExists = group.parametros_prueba.some((p: any) => p.id === param.id);
+
       if (!alreadyExists) {
-        group.parametros_prueba.push(param);
+        group.parametros_prueba.push({
+          ...param,
+          _original_index:
+            detailIndex * 1000 + paramIndex,
+        });
       }
     });
 
-    (test.parametros_prueba_divisores || []).forEach((divider: any) => {
+    (test.parametros_prueba_divisores || []).forEach((divider: any, dividerIndex: number) => {
       const alreadyExists = group.divisores.some((x: any) => x.id === divider.id);
+
       if (!alreadyExists) {
-        group.divisores.push(divider);
+        group.divisores.push({
+          ...divider,
+          _original_index:
+            detailIndex * 1000 + dividerIndex,
+        });
       }
     });
   });
 
-  return Object.values(groupedMap)
-    .map((group: any) => {
-      const sortedParams = [...(group.parametros_prueba || [])].sort(compareBySortOrderThenName);
-      const sortedDividers = [...(group.divisores || [])].sort((a: any, b: any) => {
-        const aSort = Number.isFinite(Number(a?.sort_order)) ? Number(a.sort_order) : Number.MAX_SAFE_INTEGER;
-        const bSort = Number.isFinite(Number(b?.sort_order)) ? Number(b.sort_order) : Number.MAX_SAFE_INTEGER;
+  return groupedList.map((group: any) => {
+    const sortedParams = [...(group.parametros_prueba || [])].sort(compareBySortOrderThenIndex);
 
-        if (aSort !== bSort) return aSort - bSort;
+    const sortedDividers = [...(group.divisores || [])].sort((a: any, b: any) => {
+      const aSort = Number.isFinite(Number(a?.sort_order))
+        ? Number(a.sort_order)
+        : Number.MAX_SAFE_INTEGER;
+      const bSort = Number.isFinite(Number(b?.sort_order))
+        ? Number(b.sort_order)
+        : Number.MAX_SAFE_INTEGER;
 
-        return String(a?.texto || '').localeCompare(String(b?.texto || ''), 'es', {
-          sensitivity: 'base',
-        });
-      });
+      if (aSort !== bSort) return aSort - bSort;
 
-      return {
-        ...group,
-        parametros_prueba: sortedParams,
-        divisores: sortedDividers,
-        structure_items: buildMixedTestStructure(sortedParams, sortedDividers),
-      };
-    })
-    .sort((a: any, b: any) => {
-      const byName = String(a.name || '').localeCompare(String(b.name || ''), 'es', {
-        sensitivity: 'base',
-      });
+      const aIndex = Number.isFinite(Number(a?._original_index))
+        ? Number(a._original_index)
+        : Number.MAX_SAFE_INTEGER;
+      const bIndex = Number.isFinite(Number(b?._original_index))
+        ? Number(b._original_index)
+        : Number.MAX_SAFE_INTEGER;
 
-      if (byName !== 0) return byName;
+      if (aIndex !== bIndex) return aIndex - bIndex;
 
-      return String(a.description || '').localeCompare(String(b.description || ''), 'es', {
+      return String(a?.texto || '').localeCompare(String(b?.texto || ''), 'es', {
         sensitivity: 'base',
       });
     });
+
+    return {
+      ...group,
+      parametros_prueba: sortedParams,
+      divisores: sortedDividers,
+      structure_items: buildMixedTestStructure(sortedParams, sortedDividers),
+    };
+  });
 }
 
 function groupPdfResultsByTestName(
@@ -1013,10 +1059,10 @@ export default function ResultsPage() {
 
         const matchingExistingResults = (existingOrderResults || []).filter((r: any) => {
           const existingKey = buildGroupedTestKey(
-            r?.pruebas?.name,
-            r?.pruebas?.description,
-            r?.pruebas?.visible_description
-          );
+          r?.pruebas?.name,
+          r?.pruebas?.description,
+          r?.pruebas?.visible_description
+        );
           return existingKey === groupedTestKey;
         });
 

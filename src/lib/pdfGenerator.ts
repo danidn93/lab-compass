@@ -41,6 +41,7 @@ export type PdfResultDetail = {
   status?: "normal" | "high" | "low" | "positive" | "negative" | "text" | string | null;
   observation?: string | null;
   resultType?: PdfResultType;
+  sort_order?: number | null;
 };
 
 export type PdfDividerDetail = {
@@ -101,12 +102,23 @@ function normalizeExamName(value: any) {
   return String(value || "").trim().toLowerCase();
 }
 
-function normalizeExamDescription(value: any) {
+function normalizeExamDescription(
+  value: any,
+  visibleDescription: boolean | null | undefined = true
+) {
+  if (visibleDescription === false) return "";
   return String(value || "").trim().toLowerCase();
 }
 
-function buildGroupedTestKey(name: any, description: any) {
-  return `${normalizeExamName(name)}|||${normalizeExamDescription(description)}`;
+function buildGroupedTestKey(
+  name: any,
+  description: any,
+  visibleDescription: boolean | null | undefined = true
+) {
+  return `${normalizeExamName(name)}|||${normalizeExamDescription(
+    description,
+    visibleDescription
+  )}`;
 }
 
 function normalizeImageData(data?: string | null) {
@@ -303,6 +315,68 @@ function buildReferenceText(d: PdfResultDetail) {
 
 function isDividerDetail(item: any): item is PdfDividerDetail {
   return item?.item_type === "divider";
+}
+
+function safeSortOrder(value: any) {
+  const n = Number(value);
+  return Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER;
+}
+
+function normalizeDetailsForPdf(details: PdfResultRenderItem[] = []) {
+  const sorted = [...details].sort((a: any, b: any) => {
+    const aSort = safeSortOrder(a?.sort_order);
+    const bSort = safeSortOrder(b?.sort_order);
+
+    if (aSort !== bSort) return aSort - bSort;
+
+    const aIsDivider = isDividerDetail(a);
+    const bIsDivider = isDividerDetail(b);
+
+    if (aIsDivider !== bIsDivider) {
+      return aIsDivider ? -1 : 1;
+    }
+
+    const aLabel = aIsDivider ? safeText(a?.texto) : safeText(a?.parameterName);
+    const bLabel = bIsDivider ? safeText(b?.texto) : safeText(b?.parameterName);
+
+    return aLabel.localeCompare(bLabel, "es", { sensitivity: "base" });
+  });
+
+  const cleaned: PdfResultRenderItem[] = [];
+  let pendingDividers: PdfDividerDetail[] = [];
+
+  sorted.forEach((item) => {
+    if (isDividerDetail(item)) {
+      pendingDividers.push(item);
+      return;
+    }
+
+    cleaned.push(...pendingDividers, item);
+    pendingDividers = [];
+  });
+
+  return cleaned;
+}
+
+function buildResultMap(orderResults: PdfOrderResult[] = []) {
+  const map = new Map<string, PdfOrderResult>();
+
+  orderResults.forEach((result) => {
+    const key = buildGroupedTestKey(
+      result.testName,
+      result.testDescription,
+      result.visible_description ?? true
+    );
+
+    if (!map.has(key)) {
+      map.set(key, {
+        ...result,
+        details: normalizeDetailsForPdf(result.details || []),
+      });
+    }
+  });
+
+  return map;
 }
 
 function estimateWrappedHeight(
@@ -710,7 +784,8 @@ function drawStructuredDetailsWithPagination(
       config,
       patient,
       testName,
-      testDescription
+      testDescription,
+      visibleDescription
     );
     y = check.y;
 
@@ -804,17 +879,25 @@ export function generateResultsPDF(
   const doc = new jsPDF("p", "mm", "a4");
   let started = false;
 
-  orderTests.forEach((test) => {
-    const result = orderResults.find(
-      (r) =>
-        buildGroupedTestKey(r.testName, r.testDescription) ===
-        buildGroupedTestKey(test.name, test.description)
+  const resultMap = buildResultMap(orderResults || []);
+
+  const normalizedTests = (orderTests || []).map((test) => {
+    const key = buildGroupedTestKey(
+      test.name,
+      test.description,
+      test.visible_description ?? true
     );
 
-    if (!result) return;
+    return {
+      ...test,
+      _groupKey: key,
+    };
+  });
 
-    console.log("PDF TEST:", test.name, test.description);
-    console.log("PDF DETAILS:", result.details);
+  normalizedTests.forEach((test) => {
+    const result = resultMap.get(test._groupKey);
+
+    if (!result) return;
 
     if (started) {
       doc.addPage();
@@ -823,13 +906,15 @@ export function generateResultsPDF(
 
     addResultsPageScaffold(doc, config, patient);
 
+    const normalizedDetails = normalizeDetailsForPdf(result.details || []);
+
     const layout = getCenteredBlockLayout(
       doc,
       test.name,
       test.description || "",
       test.visible_description ?? true,
       result.notes || "",
-      result.details || []
+      normalizedDetails
     );
 
     drawTitleBlockAt(
@@ -841,7 +926,7 @@ export function generateResultsPDF(
     );
 
     const hasNotes = !!safeText(result.notes);
-    const hasDetails = Array.isArray(result.details) && result.details.length > 0;
+    const hasDetails = Array.isArray(normalizedDetails) && normalizedDetails.length > 0;
 
     let y = layout.contentTop;
 
@@ -861,7 +946,7 @@ export function generateResultsPDF(
     if (hasDetails) {
       y = drawStructuredDetailsWithPagination(
         doc,
-        result.details,
+        normalizedDetails,
         y,
         config,
         patient,
