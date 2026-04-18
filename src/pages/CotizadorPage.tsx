@@ -182,6 +182,22 @@ function buildSummaryLabel(prueba: Prueba, pruebas: Prueba[]) {
   return buildVariantLabel(prueba, showVariant);
 }
 
+function buildWhatsappItemLabel(prueba: Prueba, pruebas: Prueba[]) {
+  const showVariant = shouldShowVariantLabel(prueba, pruebas);
+  const variantLabel = buildVariantLabel(prueba, showVariant).trim();
+  const testName = String(prueba.name || "").trim();
+
+  if (showVariant && variantLabel) {
+    return variantLabel;
+  }
+
+  if (variantLabel) {
+    return variantLabel;
+  }
+
+  return testName;
+}
+
 export default function CotizadorPage() {
   const [paso, setPaso] = useState<1 | 2>(1);
   const [pruebas, setPruebas] = useState<Prueba[]>([]);
@@ -484,10 +500,11 @@ export default function CotizadorPage() {
     }
 
     const detallePruebas = carrito
-      .map(
-        (item, index) =>
-          `${index + 1}. ${item.name} - $${Number(item.price).toFixed(2)}`
-      )
+      .map((item, index) => {
+        const etiquetaWhatsapp = buildWhatsappItemLabel(item, pruebas);
+
+        return `${index + 1}. ${etiquetaWhatsapp} - $${Number(item.price).toFixed(2)}`;
+      })
       .join("\n");
 
     const etiquetaIdentificacion =
