@@ -43,26 +43,68 @@ export type PdfResultDetail = {
   resultType?: PdfResultType;
 };
 
-export type PdfOrderResult = {
+export type PdfDividerDetail = {
+  id: string;
+  item_type: "divider";
+  texto: string;
+  sort_order?: number | null;
+};
+
+export type PdfResultRenderItem =
+  | PdfDividerDetail
+  | (PdfResultDetail & {
+      item_type?: "parameter";
+      sort_order?: number | null;
+    });
+
+export interface PdfOrderResult {
   id: string;
   testId: string;
   testName: string;
-  notes?: string | null;
-  details: PdfResultDetail[];
+  testDescription?: string;
+  notes?: string;
   date?: string | null;
+  details: PdfResultRenderItem[];
+}
+
+export type PdfOrderTest = {
+  id: string;
+  name: string;
+  description?: string | null;
 };
 
 const PAGE = {
   width: 210,
   height: 297,
-  contentTop: 112,
-  contentBottom: 236,
+
+  frameTop: 78,
+  frameBottom: 270,
+  frameLeft: 12,
+  frameRight: 198,
+
+  innerPaddingTop: 10,
+  innerPaddingBottom: 10,
+
+  titleContentGap: 8,
+
   dateY: 262,
   attentY: 242,
 };
 
 function safeText(value: any): string {
   return String(value ?? "").trim();
+}
+
+function normalizeExamName(value: any) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function normalizeExamDescription(value: any) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function buildGroupedTestKey(name: any, description: any) {
+  return `${normalizeExamName(name)}|||${normalizeExamDescription(description)}`;
 }
 
 function normalizeImageData(data?: string | null) {
@@ -95,33 +137,6 @@ function addImageIfExists(
     doc.addImage(img, format, x, y, w, h);
   } catch {
     // ignorar
-  }
-}
-
-function addTransparentWatermark(
-  doc: jsPDF,
-  base64?: string | null,
-  x = 48,
-  y = 110,
-  w = 120,
-  h = 120,
-  opacity = 0.08
-) {
-  const img = normalizeImageData(base64);
-  const format = imageFormatFromBase64(img);
-  if (!img || !format) return;
-
-  try {
-    doc.saveGraphicsState();
-    (doc as any).setGState?.(new (doc as any).GState({ opacity }));
-    doc.addImage(img, format, x, y, w, h);
-    doc.restoreGraphicsState();
-  } catch {
-    try {
-      doc.addImage(img, format, x, y, w, h);
-    } catch {
-      // ignorar
-    }
   }
 }
 
@@ -284,6 +299,10 @@ function buildReferenceText(d: PdfResultDetail) {
   return `Rango ref.: ${min || "—"} - ${max || "—"}${unit ? ` ${unit}` : ""}`;
 }
 
+function isDividerDetail(item: any): item is PdfDividerDetail {
+  return item?.item_type === "divider";
+}
+
 function estimateWrappedHeight(
   doc: jsPDF,
   text: string,
@@ -318,21 +337,198 @@ function estimateNoteLineHeight(doc: jsPDF, line: string) {
   };
 }
 
+function estimateNotesTotalHeight(doc: jsPDF, notes: string) {
+  const lines = safeText(notes)
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter(Boolean);
+
+  if (!lines.length) return 8;
+
+  return lines.reduce((acc, line) => {
+    const estimated = estimateNoteLineHeight(doc, line);
+    return acc + estimated.height + 2;
+  }, 0);
+}
+
+function estimateStructuredDetailsTotalHeight(
+  doc: jsPDF,
+  details: PdfResultRenderItem[]
+) {
+  if (!Array.isArray(details) || details.length === 0) return 8;
+
+  return details.reduce((acc, item) => {
+    if (isDividerDetail(item)) {
+      const dividerMetrics = getDividerBlockMetrics(doc, item.texto || "DIVISOR");
+      return acc + dividerMetrics.height + 2;
+    }
+
+    const d = item as PdfResultDetail;
+    const finalValue = buildDetailValue(d);
+    const referenceText = buildReferenceText(d);
+    const observation = safeText(d.observation);
+    const resultType: PdfResultType = d.resultType || "numeric";
+
+    const valueMeasure = estimateWrappedHeight(doc, finalValue, 110, 5, 8);
+    let blockHeight = valueMeasure.height + 2;
+
+    if (referenceText && resultType === "numeric") {
+      const refMeasure = estimateWrappedHeight(doc, referenceText, 110, 4, 4);
+      blockHeight += refMeasure.height + 2;
+    }
+
+    if (observation) {
+      const obsMeasure = estimateWrappedHeight(doc, observation, 96, 4.5, 7);
+      blockHeight += obsMeasure.height + 5;
+    }
+
+    blockHeight += 2;
+
+    return acc + blockHeight;
+  }, 0);
+}
+
+function getTestTitleBlockMetrics(doc: jsPDF, testName: string, testDescription?: string | null) {
+  const nameLines = doc.splitTextToSize(safeText(testName) || "PRUEBA", 150);
+  const descriptionText = safeText(testDescription);
+  const descriptionLines = descriptionText ? doc.splitTextToSize(descriptionText, 150) : [];
+
+  const nameHeight = Math.max(1, nameLines.length) * 7;
+  const descriptionHeight = descriptionLines.length > 0 ? descriptionLines.length * 4.5 + 2 : 0;
+
+  return {
+    nameLines,
+    descriptionLines,
+    nameHeight,
+    descriptionHeight,
+    height: nameHeight + descriptionHeight + 4,
+  };
+}
+
+function getContentHeight(
+  doc: jsPDF,
+  notes: string,
+  details: PdfResultRenderItem[]
+) {
+  const hasNotes = !!safeText(notes);
+  const hasDetails = Array.isArray(details) && details.length > 0;
+
+  if (hasNotes) return estimateNotesTotalHeight(doc, notes);
+  if (hasDetails) return estimateStructuredDetailsTotalHeight(doc, details);
+
+  return 8;
+}
+
+function getFrameUsableBounds() {
+  return {
+    top: PAGE.frameTop + PAGE.innerPaddingTop,
+    bottom: PAGE.frameBottom - PAGE.innerPaddingBottom,
+  };
+}
+
+function getCenteredBlockLayout(
+  doc: jsPDF,
+  testName: string,
+  testDescription: string | null | undefined,
+  notes: string,
+  details: PdfResultRenderItem[]
+) {
+  const titleMetrics = getTestTitleBlockMetrics(doc, testName, testDescription || "");
+  const contentHeight = getContentHeight(doc, notes, details);
+
+  const totalBlockHeight = titleMetrics.height + PAGE.titleContentGap + contentHeight;
+  const bounds = getFrameUsableBounds();
+  const availableHeight = bounds.bottom - bounds.top;
+
+  let blockTop = bounds.top;
+
+  if (availableHeight > totalBlockHeight) {
+    blockTop = bounds.top + (availableHeight - totalBlockHeight) / 2;
+  }
+
+  return {
+    bounds,
+    titleMetrics,
+    totalBlockHeight,
+    blockTop,
+    titleTop: blockTop,
+    contentTop: blockTop + titleMetrics.height + PAGE.titleContentGap,
+    blockBottom: blockTop + totalBlockHeight,
+  };
+}
+
 function addResultsPageScaffold(
   doc: jsPDF,
   config: PdfLabConfig,
-  patient: PdfPatient,
-  testName: string
+  patient: PdfPatient
 ) {
   addHeader(doc, config);
   drawPatientLine(doc, patient);
-  drawResultFrame(doc, 78, 270);
+  drawResultFrame(doc, PAGE.frameTop, PAGE.frameBottom);
   addPageBackground(doc, config);
+}
+
+function drawTitleBlockAt(
+  doc: jsPDF,
+  testName: string,
+  testDescription: string | null | undefined,
+  yTop: number
+) {
+  const titleMetrics = getTestTitleBlockMetrics(doc, testName, testDescription || "");
+  const nameBaselineY = yTop + 7;
 
   doc.setTextColor(70, 70, 70);
   doc.setFont("times", "bold");
   doc.setFontSize(18);
-  doc.text(testName, 105, 95, { align: "center" });
+  doc.text(titleMetrics.nameLines, 105, nameBaselineY, { align: "center" });
+
+  if (titleMetrics.descriptionLines.length > 0) {
+    const descriptionBaselineY = nameBaselineY + titleMetrics.nameHeight;
+    doc.setFont("times", "normal");
+    doc.setFontSize(10);
+    doc.setTextColor(95, 95, 95);
+    doc.text(titleMetrics.descriptionLines, 105, descriptionBaselineY, { align: "center" });
+  }
+}
+
+function drawDividerTitleAt(
+  doc: jsPDF,
+  dividerText: string,
+  yTop: number
+) {
+  const text = safeText(dividerText || "DIVISOR").toUpperCase();
+
+  doc.setTextColor(70, 70, 70);
+  doc.setFont("times", "bold");
+  doc.setFontSize(16);
+  doc.text(text, 105, yTop + 6, { align: "center" });
+}
+
+function getDividerBlockMetrics(doc: jsPDF, dividerText: string) {
+  const lines = doc.splitTextToSize(
+    (safeText(dividerText) || "DIVISOR").toUpperCase(),
+    150
+  );
+  const textHeight = Math.max(1, lines.length) * 7;
+
+  return {
+    lines,
+    height: textHeight + 6,
+  };
+}
+
+function getContinuationPageContentStart(
+  doc: jsPDF,
+  testName: string,
+  testDescription?: string | null
+) {
+  const bounds = getFrameUsableBounds();
+  const titleMetrics = getTestTitleBlockMetrics(doc, testName, testDescription || "");
+  const titleTop = bounds.top;
+
+  drawTitleBlockAt(doc, testName, testDescription || "", titleTop);
+
+  return titleTop + titleMetrics.height + PAGE.titleContentGap;
 }
 
 function ensureSpaceForNextBlock(
@@ -341,15 +537,22 @@ function ensureSpaceForNextBlock(
   neededHeight: number,
   config: PdfLabConfig,
   patient: PdfPatient,
-  testName: string
+  testName: string,
+  testDescription?: string | null
 ) {
-  if (currentY + neededHeight <= PAGE.contentBottom) {
+  const bounds = getFrameUsableBounds();
+
+  if (currentY + neededHeight <= bounds.bottom) {
     return { y: currentY, pageBreak: false };
   }
 
   doc.addPage();
-  addResultsPageScaffold(doc, config, patient, testName);
-  return { y: PAGE.contentTop, pageBreak: true };
+  addResultsPageScaffold(doc, config, patient);
+
+  return {
+    y: getContinuationPageContentStart(doc, testName, testDescription),
+    pageBreak: true,
+  };
 }
 
 function drawNotesWithPagination(
@@ -358,7 +561,8 @@ function drawNotesWithPagination(
   startY: number,
   config: PdfLabConfig,
   patient: PdfPatient,
-  testName: string
+  testName: string,
+  testDescription?: string | null
 ) {
   const lines = safeText(notes)
     .split(/\r?\n/)
@@ -367,13 +571,17 @@ function drawNotesWithPagination(
 
   let y = startY;
 
-  doc.setTextColor(70, 70, 70);
-  doc.setFont("times", "bold");
-  doc.setFontSize(11);
-
   lines.forEach((line) => {
     const estimated = estimateNoteLineHeight(doc, line);
-    const check = ensureSpaceForNextBlock(doc, y, estimated.height + 2, config, patient, testName);
+    const check = ensureSpaceForNextBlock(
+      doc,
+      y,
+      estimated.height + 2,
+      config,
+      patient,
+      testName,
+      testDescription
+    );
     y = check.y;
 
     if (estimated.parsed) {
@@ -384,6 +592,7 @@ function drawNotesWithPagination(
       doc.text(":", 72, y);
 
       doc.setFont("times", "normal");
+      doc.setTextColor(70, 70, 70);
       doc.text(estimated.wrapped, 78, y);
       y += estimated.height;
     } else {
@@ -400,15 +609,39 @@ function drawNotesWithPagination(
 
 function drawStructuredDetailsWithPagination(
   doc: jsPDF,
-  details: PdfResultDetail[],
+  details: PdfResultRenderItem[],
   startY: number,
   config: PdfLabConfig,
   patient: PdfPatient,
-  testName: string
+  testName: string,
+  testDescription?: string | null
 ) {
   let y = startY;
 
-  details.forEach((d) => {
+  details.forEach((item) => {
+    if (isDividerDetail(item)) {
+      const dividerText = safeText(item.texto || "DIVISOR");
+      const dividerMetrics = getDividerBlockMetrics(doc, dividerText);
+
+      const check = ensureSpaceForNextBlock(
+        doc,
+        y,
+        dividerMetrics.height + 4,
+        config,
+        patient,
+        testName,
+        testDescription
+      );
+
+      y = check.y;
+
+      drawDividerTitleAt(doc, dividerText, y);
+
+      y += dividerMetrics.height + 8;
+      return;
+    }
+
+    const d = item as PdfResultDetail;
     const label = safeText(d.parameterName || "Resultado");
     const finalValue = buildDetailValue(d);
     const referenceText = buildReferenceText(d);
@@ -418,13 +651,8 @@ function drawStructuredDetailsWithPagination(
     const valueMeasure = estimateWrappedHeight(doc, finalValue, 110, 5, 8);
     let blockHeight = valueMeasure.height + 2;
 
-    let refMeasure:
-      | { wrapped: string[]; height: number }
-      | null = null;
-
-    let obsMeasure:
-      | { wrapped: string[]; height: number }
-      | null = null;
+    let refMeasure: { wrapped: string[]; height: number } | null = null;
+    let obsMeasure: { wrapped: string[]; height: number } | null = null;
 
     if (referenceText && resultType === "numeric") {
       refMeasure = estimateWrappedHeight(doc, referenceText, 110, 4, 4);
@@ -436,7 +664,15 @@ function drawStructuredDetailsWithPagination(
       blockHeight += obsMeasure.height + 5;
     }
 
-    const check = ensureSpaceForNextBlock(doc, y, blockHeight, config, patient, testName);
+    const check = ensureSpaceForNextBlock(
+      doc,
+      y,
+      blockHeight,
+      config,
+      patient,
+      testName,
+      testDescription
+    );
     y = check.y;
 
     doc.setTextColor(70, 70, 70);
@@ -446,6 +682,7 @@ function drawStructuredDetailsWithPagination(
     doc.text(":", 72, y);
 
     doc.setFont("times", "normal");
+    doc.setTextColor(70, 70, 70);
     doc.text(valueMeasure.wrapped, 78, y);
     y += valueMeasure.height;
 
@@ -464,6 +701,7 @@ function drawStructuredDetailsWithPagination(
       doc.text("Observación:", 78, y);
 
       doc.setFont("times", "normal");
+      doc.setTextColor(70, 70, 70);
       doc.text(obsMeasure.wrapped, 104, y);
       y += obsMeasure.height + 2;
     }
@@ -519,7 +757,7 @@ export function downloadBlob(blob: Blob, filename: string) {
 export function generateResultsPDF(
   order: PdfOrder,
   patient: PdfPatient,
-  orderTests: Array<{ id: string; name: string }>,
+  orderTests: PdfOrderTest[],
   orderResults: PdfOrderResult[],
   config: PdfLabConfig,
   options?: { autoDownload?: boolean; fileName?: string }
@@ -528,32 +766,69 @@ export function generateResultsPDF(
   let started = false;
 
   orderTests.forEach((test) => {
-    const result = orderResults.find((r) => r.testId === test.id);
+    const result = orderResults.find(
+      (r) =>
+        buildGroupedTestKey(r.testName, r.testDescription) ===
+        buildGroupedTestKey(test.name, test.description)
+    );
+
     if (!result) return;
+
+    console.log("PDF TEST:", test.name, test.description);
+    console.log("PDF DETAILS:", result.details);
 
     if (started) {
       doc.addPage();
     }
     started = true;
 
-    addResultsPageScaffold(doc, config, patient, test.name);
+    addResultsPageScaffold(doc, config, patient);
 
-    let y = PAGE.contentTop;
-    const hasNotes = safeText(result.notes);
+    const layout = getCenteredBlockLayout(
+      doc,
+      test.name,
+      test.description || "",
+      result.notes || "",
+      result.details || []
+    );
+
+    drawTitleBlockAt(
+      doc,
+      test.name,
+      test.description || "",
+      layout.titleTop
+    );
+
+    const hasNotes = !!safeText(result.notes);
     const hasDetails = Array.isArray(result.details) && result.details.length > 0;
 
+    let y = layout.contentTop;
+
     if (hasNotes) {
-      y = drawNotesWithPagination(doc, result.notes || "", y, config, patient, test.name);
-    } else if (hasDetails) {
+      y = drawNotesWithPagination(
+        doc,
+        result.notes || "",
+        y,
+        config,
+        patient,
+        test.name,
+        test.description || ""
+      );
+    }
+
+    if (hasDetails) {
       y = drawStructuredDetailsWithPagination(
         doc,
         result.details,
         y,
         config,
         patient,
-        test.name
+        test.name,
+        test.description || ""
       );
-    } else {
+    }
+
+    if (!hasNotes && !hasDetails) {
       doc.setFont("times", "normal");
       doc.setFontSize(11);
       doc.setTextColor(70, 70, 70);
@@ -561,8 +836,8 @@ export function generateResultsPDF(
       y += 8;
     }
 
-    const totalPages = doc.getNumberOfPages();
-    doc.setPage(totalPages);
+    const currentPage = doc.getNumberOfPages();
+    doc.setPage(currentPage);
 
     if (y < PAGE.attentY - 2) {
       doc.setFont("times", "bold");

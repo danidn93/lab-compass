@@ -535,55 +535,53 @@ function agruparDetallesFactura(
   }>,
 ) {
   const mapa = new Map<string, {
-    test_id?: string | null;
     descripcion: string;
-    cantidad: number;
+    cantidadOriginal: number;
     precioTotalSinImpuesto: number;
     baseImponible: number;
+    valorIva: number;
     codigoPorcentaje: string;
     tarifa: number;
-    valorIva: number;
   }>();
 
   for (const d of detalles || []) {
     const descripcion = String(d.descripcion || "Examen de laboratorio").trim();
-    const key = [
-      descripcion.toLowerCase(),
-      String(d.codigoPorcentaje || ""),
-      Number(d.tarifa || 0).toFixed(2),
-    ].join("|");
+    const key = descripcion.toLowerCase().trim();
 
     if (!mapa.has(key)) {
       mapa.set(key, {
-        test_id: d.test_id || null,
         descripcion,
-        cantidad: 0,
+        cantidadOriginal: 0,
         precioTotalSinImpuesto: 0,
         baseImponible: 0,
+        valorIva: 0,
         codigoPorcentaje: String(d.codigoPorcentaje || ""),
         tarifa: round2(Number(d.tarifa || 0)),
-        valorIva: 0,
       });
     }
 
     const item = mapa.get(key)!;
-    item.cantidad += Number(d.cantidad || 0);
+    item.cantidadOriginal += Number(d.cantidad || 0);
     item.precioTotalSinImpuesto += Number(d.precioTotalSinImpuesto || 0);
     item.baseImponible += Number(d.baseImponible || 0);
     item.valorIva += Number(d.valorIva || 0);
   }
 
-  return Array.from(mapa.values()).map((item) => ({
-    ...item,
-    cantidad: round2(item.cantidad),
-    precioTotalSinImpuesto: round2(item.precioTotalSinImpuesto),
-    baseImponible: round2(item.baseImponible),
-    valorIva: round2(item.valorIva),
-    precioUnitario:
-      item.cantidad > 0
-        ? round2(item.precioTotalSinImpuesto / item.cantidad)
-        : 0,
-  }));
+  return Array.from(mapa.values()).map((item) => {
+    const totalSinImpuesto = round2(item.precioTotalSinImpuesto);
+
+    return {
+      descripcion: item.descripcion,
+      cantidad: 1,
+      precioUnitario: totalSinImpuesto,
+      precioTotalSinImpuesto: totalSinImpuesto,
+      baseImponible: round2(item.baseImponible),
+      codigoPorcentaje: item.codigoPorcentaje,
+      tarifa: round2(item.tarifa),
+      valorIva: round2(item.valorIva),
+      cantidadOriginal: round2(item.cantidadOriginal),
+    };
+  });
 }
 
 function buildFacturaXml(params: {
@@ -791,51 +789,53 @@ async function generarRidePdf(params: {
     }>
   ) => {
     const mapa = new Map<string, {
+      descripcion: string;
+      cantidadOriginal: number;
+      precioTotal: number;
+      descuento: number;
+      subsidio: number;
+      precioSinSubsidio: number;
       codigoPrincipal?: string;
       codigoAuxiliar?: string;
-      cantidad: number;
-      descripcion: string;
-      detalleAdicional?: string;
-      precioUnitario: number;
-      subsidio?: number;
-      precioSinSubsidio?: number;
-      descuento?: number;
-      precioTotal: number;
     }>();
 
     for (const item of detalles || []) {
-      const descripcion = safe(item?.descripcion || "Item");
-      const detalleAdicional = safe(item?.detalleAdicional || "");
-      const key = `${descripcion.toLowerCase()}|${detalleAdicional.toLowerCase()}|${Number(item?.precioUnitario || 0).toFixed(2)}`;
+      const descripcion = safe(item?.descripcion || "Item").trim();
+      const key = descripcion.toLowerCase().trim();
 
       if (!mapa.has(key)) {
         mapa.set(key, {
+          descripcion,
+          cantidadOriginal: 0,
+          precioTotal: 0,
+          descuento: 0,
+          subsidio: 0,
+          precioSinSubsidio: 0,
           codigoPrincipal: item?.codigoPrincipal,
           codigoAuxiliar: item?.codigoAuxiliar,
-          cantidad: 0,
-          descripcion,
-          detalleAdicional,
-          precioUnitario: round2(Number(item?.precioUnitario || 0)),
-          subsidio: round2(Number(item?.subsidio || 0)),
-          precioSinSubsidio: round2(Number(item?.precioSinSubsidio || 0)),
-          descuento: round2(Number(item?.descuento || 0)),
-          precioTotal: 0,
         });
       }
 
       const actual = mapa.get(key)!;
-      actual.cantidad += Number(item?.cantidad || 0);
+      actual.cantidadOriginal += Number(item?.cantidad || 0);
       actual.precioTotal += Number(item?.precioTotal || 0);
-      actual.descuento = round2(Number(actual.descuento || 0) + Number(item?.descuento || 0));
+      actual.descuento += Number(item?.descuento || 0);
+      actual.subsidio += Number(item?.subsidio || 0);
+      actual.precioSinSubsidio += Number(item?.precioSinSubsidio || 0);
     }
 
     return Array.from(mapa.values()).map((item, idx) => ({
-      ...item,
       codigoPrincipal: item.codigoPrincipal || String(idx + 1).padStart(3, "0"),
-      cantidad: round2(item.cantidad),
+      codigoAuxiliar: item.codigoAuxiliar || "",
+      cantidad: 1,
+      descripcion: item.descripcion,
+      detalleAdicional: "",
+      precioUnitario: round2(item.precioTotal),
+      subsidio: round2(item.subsidio),
+      precioSinSubsidio: round2(item.precioSinSubsidio),
+      descuento: round2(item.descuento),
       precioTotal: round2(item.precioTotal),
-      descuento: round2(Number(item.descuento || 0)),
-      detalleAdicional: item.detalleAdicional || "",
+      cantidadOriginal: round2(item.cantidadOriginal),
     }));
   };
 
@@ -1621,11 +1621,11 @@ Deno.serve(async (req) => {
       const descripcion = String(d?.pruebas?.name || "Examen de laboratorio").trim();
       const cantidad = 1;
       const precioUnitario = round2(Number(d.price || d?.pruebas?.price || 0));
-      const tarifa = round2(Number(
-        d.porcentaje_iva ?? d?.pruebas?.porcentaje_iva ?? configFE.porcentaje_iva ?? 15,
-      ));
+      const tarifa = round2(
+        Number(d.porcentaje_iva ?? d?.pruebas?.porcentaje_iva ?? configFE.porcentaje_iva ?? 15)
+      );
       const codigoPorcentaje = String(
-        d.codigo_porcentaje_iva || d?.pruebas?.codigo_porcentaje_iva || "4",
+        d.codigo_porcentaje_iva || d?.pruebas?.codigo_porcentaje_iva || "4"
       );
       const baseImponible = round2(Number(d.subtotal_sin_impuesto ?? precioUnitario));
       const valorIva = round2(Number(d.valor_iva ?? (baseImponible * tarifa / 100)));
@@ -1984,10 +1984,10 @@ Deno.serve(async (req) => {
       detalles: detalles.map((d, idx) => ({
         codigoPrincipal: String(idx + 1).padStart(3, "0"),
         codigoAuxiliar: "",
-        cantidad: d.cantidad,
+        cantidad: 1,
         descripcion: d.descripcion,
         detalleAdicional: "",
-        precioUnitario: d.precioUnitario,
+        precioUnitario: round2(d.precioTotalSinImpuesto + d.valorIva),
         subsidio: 0,
         precioSinSubsidio: 0,
         descuento: 0,

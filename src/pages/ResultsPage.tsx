@@ -40,6 +40,22 @@ import {
 type ResultStatus = 'normal' | 'high' | 'low' | 'positive' | 'negative' | 'text' | null;
 type ResultType = 'numeric' | 'boolean' | 'text';
 
+interface DividerDisplayItem {
+  id: string;
+  item_type: 'divider';
+  texto: string;
+  sort_order: number;
+}
+
+interface ParameterDisplayItem {
+  id: string;
+  item_type: 'parameter';
+  parameter: any;
+  sort_order: number;
+}
+
+type TestStructureDisplayItem = DividerDisplayItem | ParameterDisplayItem;
+
 interface EntryValueItem {
   value_numeric: string;
   value_boolean: '' | 'true' | 'false';
@@ -63,6 +79,61 @@ function safeFileNamePart(value: any): string {
     .replace(/[^a-zA-Z0-9_-]+/g, '_')
     .replace(/^_+|_+$/g, '')
     .slice(0, 80);
+}
+
+function compareBySortOrderThenName(a: any, b: any) {
+  const aSort = Number.isFinite(Number(a?.sort_order)) ? Number(a.sort_order) : Number.MAX_SAFE_INTEGER;
+  const bSort = Number.isFinite(Number(b?.sort_order)) ? Number(b.sort_order) : Number.MAX_SAFE_INTEGER;
+
+  if (aSort !== bSort) return aSort - bSort;
+
+  return String(a?.name || '').localeCompare(String(b?.name || ''), 'es', {
+    sensitivity: 'base',
+  });
+}
+
+function sortParametersForDisplay(params: any[] = []) {
+  return [...params].sort(compareBySortOrderThenName);
+}
+
+function buildMixedTestStructure(
+  parametros: any[] = [],
+  divisores: any[] = []
+): TestStructureDisplayItem[] {
+  const parameterItems: ParameterDisplayItem[] = [...(parametros || [])].map((param: any) => ({
+    id: param.id,
+    item_type: 'parameter',
+    parameter: param,
+    sort_order: Number.isFinite(Number(param?.sort_order))
+      ? Number(param.sort_order)
+      : Number.MAX_SAFE_INTEGER,
+  }));
+
+  const dividerItems: DividerDisplayItem[] = [...(divisores || [])]
+    .filter((d: any) => d.activo !== false)
+    .map((divider: any) => ({
+      id: divider.id,
+      item_type: 'divider',
+      texto: String(divider.texto || ''),
+      sort_order: Number.isFinite(Number(divider?.sort_order))
+        ? Number(divider.sort_order)
+        : Number.MAX_SAFE_INTEGER,
+    }));
+
+  return [...parameterItems, ...dividerItems].sort((a, b) => {
+    if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
+
+    if (a.item_type !== b.item_type) {
+      return a.item_type === 'divider' ? -1 : 1;
+    }
+
+    const aName = a.item_type === 'divider' ? a.texto : a.parameter?.name || '';
+    const bName = b.item_type === 'divider' ? b.texto : b.parameter?.name || '';
+
+    return String(aName).localeCompare(String(bName), 'es', {
+      sensitivity: 'base',
+    });
+  });
 }
 
 function normalizePhoneForWhatsapp(phone: any): string {
@@ -97,6 +168,14 @@ function normalizeExamName(value: any) {
   return String(value || '').trim().toLowerCase();
 }
 
+function normalizeExamDescription(value: any) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function buildGroupedTestKey(name: any, description: any) {
+  return `${normalizeExamName(name)}|||${normalizeExamDescription(description)}`;
+}
+
 function groupTestsByName(details: any[] = []) {
   const groupedMap: Record<string, any> = {};
 
@@ -104,41 +183,74 @@ function groupTestsByName(details: any[] = []) {
     const test = d?.pruebas;
     if (!test) return;
 
-    const key = normalizeExamName(test.name);
+    const key = buildGroupedTestKey(test.name, test.description);
     if (!key) return;
 
     if (!groupedMap[key]) {
       groupedMap[key] = {
         id: test.id,
         name: test.name,
+        description: test.description || '',
         test_ids: [],
         parametros_prueba: [],
+        divisores: [],
+        structure_items: [],
       };
     }
 
-    if (!groupedMap[key].test_ids.includes(test.id)) {
-      groupedMap[key].test_ids.push(test.id);
+    const group = groupedMap[key];
+
+    if (!group.test_ids.includes(test.id)) {
+      group.test_ids.push(test.id);
     }
 
-    const existingParams = groupedMap[key].parametros_prueba;
-
     (test.parametros_prueba || []).forEach((param: any) => {
-      if (!existingParams.some((p: any) => p.id === param.id)) {
-        existingParams.push(param);
+      const alreadyExists = group.parametros_prueba.some((p: any) => p.id === param.id);
+      if (!alreadyExists) {
+        group.parametros_prueba.push(param);
+      }
+    });
+
+    (test.parametros_prueba_divisores || []).forEach((divider: any) => {
+      const alreadyExists = group.divisores.some((x: any) => x.id === divider.id);
+      if (!alreadyExists) {
+        group.divisores.push(divider);
       }
     });
   });
 
   return Object.values(groupedMap)
-    .map((test: any) => ({
-      ...test,
-      parametros_prueba: sortByNameAsc(test.parametros_prueba || [], 'name'),
-    }))
-    .sort((a: any, b: any) =>
-      String(a.name || '').localeCompare(String(b.name || ''), 'es', {
+    .map((group: any) => {
+      const sortedParams = [...(group.parametros_prueba || [])].sort(compareBySortOrderThenName);
+      const sortedDividers = [...(group.divisores || [])].sort((a: any, b: any) => {
+        const aSort = Number.isFinite(Number(a?.sort_order)) ? Number(a.sort_order) : Number.MAX_SAFE_INTEGER;
+        const bSort = Number.isFinite(Number(b?.sort_order)) ? Number(b.sort_order) : Number.MAX_SAFE_INTEGER;
+
+        if (aSort !== bSort) return aSort - bSort;
+
+        return String(a?.texto || '').localeCompare(String(b?.texto || ''), 'es', {
+          sensitivity: 'base',
+        });
+      });
+
+      return {
+        ...group,
+        parametros_prueba: sortedParams,
+        divisores: sortedDividers,
+        structure_items: buildMixedTestStructure(sortedParams, sortedDividers),
+      };
+    })
+    .sort((a: any, b: any) => {
+      const byName = String(a.name || '').localeCompare(String(b.name || ''), 'es', {
         sensitivity: 'base',
-      })
-    );
+      });
+
+      if (byName !== 0) return byName;
+
+      return String(a.description || '').localeCompare(String(b.description || ''), 'es', {
+        sensitivity: 'base',
+      });
+    });
 }
 
 function groupPdfResultsByTestName(
@@ -151,13 +263,17 @@ function groupPdfResultsByTestName(
 
   resultados.forEach((res: any) => {
     const testName = String(res?.pruebas?.name || '').trim();
-    const key = normalizeExamName(testName);
+    const testDescription = String(res?.pruebas?.description || '').trim();
+    const key = buildGroupedTestKey(testName, testDescription);
+
+    if (!key) return;
 
     if (!groupedMap[key]) {
       groupedMap[key] = {
         id: res.id,
         testId: res.pruebas?.id || res.test_id || res.id,
         testName,
+        testDescription,
         notes: res.notes || res.observacion || res.resultado_texto || '',
         date: res.date || null,
         details: [],
@@ -166,20 +282,42 @@ function groupPdfResultsByTestName(
 
     const targetDetails = groupedMap[key].details;
 
+    const dividers = (res?.pruebas?.parametros_prueba_divisores || [])
+      .filter((d: any) => d.activo !== false)
+      .map((d: any) => ({
+        id: `divider-${d.id}`,
+        item_type: 'divider',
+        texto: d.texto || '',
+        sort_order: d.sort_order ?? null,
+      }));
+
+    dividers.forEach((divider: any) => {
+      const exists = targetDetails.some((x: any) => x.id === divider.id);
+      if (!exists) {
+        targetDetails.push(divider);
+      }
+    });
+
     (res.resultado_detalle || []).forEach((det: any) => {
       const parameterId = det.parametros_prueba?.id || det.parameter_id || null;
       const parameterName =
         det.parametros_prueba?.name || det.name || det.parametro || 'Resultado';
 
       const alreadyExists = targetDetails.some((d: any) =>
-        parameterId ? d.parameterId === parameterId : d.parameterName === parameterName
+        d.item_type === 'divider'
+          ? false
+          : parameterId
+          ? d.parameterId === parameterId
+          : d.parameterName === parameterName
       );
 
       if (!alreadyExists) {
         targetDetails.push({
           id: det.id,
+          item_type: 'parameter',
           parameterId,
           parameterName,
+          sort_order: det.parametros_prueba?.sort_order ?? null,
           value: getDisplayValue(det),
           appliedRangeMin: det.applied_range_min ?? null,
           appliedRangeMax: det.applied_range_max ?? null,
@@ -203,13 +341,39 @@ function groupPdfResultsByTestName(
   return Object.values(groupedMap)
     .map((group: any) => ({
       ...group,
-      details: sortByNameAsc(group.details || [], 'parameterName'),
+      details: [...(group.details || [])].sort((a: any, b: any) => {
+        const aSort = Number.isFinite(Number(a?.sort_order))
+          ? Number(a.sort_order)
+          : Number.MAX_SAFE_INTEGER;
+        const bSort = Number.isFinite(Number(b?.sort_order))
+          ? Number(b.sort_order)
+          : Number.MAX_SAFE_INTEGER;
+
+        if (aSort !== bSort) return aSort - bSort;
+
+        const aLabel =
+          a.item_type === 'divider' ? a.texto || '' : a.parameterName || '';
+        const bLabel =
+          b.item_type === 'divider' ? b.texto || '' : b.parameterName || '';
+
+        return String(aLabel).localeCompare(String(bLabel), 'es', {
+          sensitivity: 'base',
+        });
+      }),
     }))
-    .sort((a: any, b: any) =>
-      String(a.testName || '').localeCompare(String(b.testName || ''), 'es', {
+    .sort((a: any, b: any) => {
+      const byName = String(a.testName || '').localeCompare(String(b.testName || ''), 'es', {
         sensitivity: 'base',
-      })
-    );
+      });
+
+      if (byName !== 0) return byName;
+
+      return String(a.testDescription || '').localeCompare(
+        String(b.testDescription || ''),
+        'es',
+        { sensitivity: 'base' }
+      );
+    });
 }
 
 export default function ResultsPage() {
@@ -306,10 +470,12 @@ export default function ResultsPage() {
       const { data: details, error } = await supabase
         .from('orden_detalle')
         .select(`
+          id,
           test_id,
           pruebas (
             id,
             name,
+            description,
             parametros_prueba (
               id,
               name,
@@ -322,10 +488,17 @@ export default function ResultsPage() {
               valor_default,
               valor_default_boolean,
               rangos_referencia (*)
+            ),
+            parametros_prueba_divisores (
+              id,
+              texto,
+              sort_order,
+              activo
             )
           )
         `)
-        .eq('order_id', order.id);
+        .eq('order_id', order.id)
+        .order('id', { ascending: true });
 
       if (error) throw error;
 
@@ -333,25 +506,28 @@ export default function ResultsPage() {
 
       const initialValues: Record<string, EntryValueItem> = {};
       normalizedTests.forEach((test: any) => {
-        (test.parametros_prueba || []).forEach((param: any) => {
-          const resultType: ResultType = param.result_type || 'numeric';
+        (test.structure_items || [])
+          .filter((item: any) => item.item_type === 'parameter')
+          .forEach((item: any) => {
+            const param = item.parameter;
+            const resultType: ResultType = param.result_type || 'numeric';
 
-          initialValues[param.id] = {
-            ...emptyEntryValue(),
-            value_text:
-              resultType === 'text'
-                ? String(param.valor_default || '')
-                : '',
-            value_boolean:
-              resultType === 'boolean'
-                ? param.valor_default_boolean === true
-                  ? 'true'
-                  : param.valor_default_boolean === false
-                  ? 'false'
-                  : ''
-                : '',
-          };
-        });
+            initialValues[param.id] = {
+              ...emptyEntryValue(),
+              value_text:
+                resultType === 'text'
+                  ? String(param.valor_default || '')
+                  : '',
+              value_boolean:
+                resultType === 'boolean'
+                  ? param.valor_default_boolean === true
+                    ? 'true'
+                    : param.valor_default_boolean === false
+                    ? 'false'
+                    : ''
+                  : '',
+            };
+          });
       });
 
       setEntryValues(initialValues);
@@ -438,16 +614,20 @@ export default function ResultsPage() {
     }
 
     for (const test of orderDetails.tests) {
-      for (const param of test.parametros_prueba || []) {
-        const item = entryValues[param.id] || emptyEntryValue();
+      for (const structureItem of test.structure_items || []) {
+        if (structureItem.item_type !== 'parameter') continue;
+
+        const param = structureItem.parameter;
+        const entryItem = entryValues[param.id] || emptyEntryValue();
         const resultType: ResultType = param.result_type || 'numeric';
 
         if (resultType === 'numeric') {
-          if (item.value_numeric === '') {
+          if (entryItem.value_numeric === '') {
             toast.error(`Falta ingresar el valor de "${param.name}" en ${test.name}`);
             return false;
           }
-          const n = Number(item.value_numeric);
+
+          const n = Number(entryItem.value_numeric);
           if (!Number.isFinite(n)) {
             toast.error(`El valor de "${param.name}" no es válido`);
             return false;
@@ -455,14 +635,14 @@ export default function ResultsPage() {
         }
 
         if (resultType === 'boolean') {
-          if (item.value_boolean === '') {
+          if (entryItem.value_boolean === '') {
             toast.error(`Falta seleccionar el valor de "${param.name}" en ${test.name}`);
             return false;
           }
         }
 
         if (resultType === 'text') {
-          if (!item.value_text.trim()) {
+          if (!entryItem.value_text.trim()) {
             toast.error(`Falta ingresar el texto de "${param.name}" en ${test.name}`);
             return false;
           }
@@ -517,12 +697,14 @@ export default function ResultsPage() {
     const orderTests = groupedResults.map((res: any) => ({
       id: res.testId,
       name: res.testName,
+      description: res.testDescription || '',
     }));
 
     const orderResults: PdfOrderResult[] = groupedResults.map((res: any) => ({
       id: res.id,
       testId: res.testId,
       testName: res.testName,
+      testDescription: res.testDescription || '',
       notes: res.notes || '',
       date: res.date || null,
       details: res.details,
@@ -549,7 +731,17 @@ export default function ResultsPage() {
                   rangos_referencia (*)
                 )
               ),
-              pruebas (*)
+              pruebas (
+                id,
+                name,
+                description,
+                parametros_prueba_divisores (
+                  id,
+                  texto,
+                  sort_order,
+                  activo
+                )
+              )
             )
           `)
           .eq('id', orderId)
@@ -746,7 +938,8 @@ export default function ResultsPage() {
           test_id,
           pruebas (
             id,
-            name
+            name,
+            description
           )
         `)
         .eq('order_id', selectedOrderId);
@@ -754,11 +947,14 @@ export default function ResultsPage() {
       if (existingOrderResultsError) throw existingOrderResultsError;
 
       for (const test of orderDetails.tests) {
-        const groupedNameKey = normalizeExamName(test.name);
+        const groupedTestKey = buildGroupedTestKey(test.name, test.description);
 
         const matchingExistingResults = (existingOrderResults || []).filter((r: any) => {
-          const existingName = normalizeExamName(r?.pruebas?.name);
-          return existingName === groupedNameKey;
+          const existingKey = buildGroupedTestKey(
+            r?.pruebas?.name,
+            r?.pruebas?.description
+          );
+          return existingKey === groupedTestKey;
         });
 
         const primaryExistingResult = matchingExistingResults[0] || null;
@@ -824,48 +1020,51 @@ export default function ResultsPage() {
           if (deleteDuplicateResultError) throw deleteDuplicateResultError;
         }
 
-        const detailsToInsert = (test.parametros_prueba || []).map((param: any) => {
-          const item = entryValues[param.id] || emptyEntryValue();
-          const resultType: ResultType = param.result_type || 'numeric';
-          const range =
-            resultType === 'numeric' ? getAppliedRange(param, orderDetails.pacientes) : null;
+        const detailsToInsert = (test.structure_items || [])
+          .filter((structureItem: any) => structureItem.item_type === 'parameter')
+          .map((structureItem: any) => {
+            const param = structureItem.parameter;
+            const entryItem = entryValues[param.id] || emptyEntryValue();
+            const resultType: ResultType = param.result_type || 'numeric';
+            const range =
+              resultType === 'numeric' ? getAppliedRange(param, orderDetails.pacientes) : null;
 
-          let status: ResultStatus = null;
-          let value_numeric: number | null = null;
-          let value_boolean: boolean | null = null;
-          let value_text: string | null = null;
-          let applied_range_min: number | null = null;
-          let applied_range_max: number | null = null;
+            let status: ResultStatus = null;
+            let value_numeric: number | null = null;
+            let value_boolean: boolean | null = null;
+            let value_text: string | null = null;
+            let applied_range_min: number | null = null;
+            let applied_range_max: number | null = null;
 
-          if (resultType === 'numeric') {
-            value_numeric = Number(item.value_numeric);
-            status = classifyNumericValue(value_numeric, range);
-            applied_range_min = range?.min ?? null;
-            applied_range_max = range?.max ?? null;
-          }
+            if (resultType === 'numeric') {
+              value_numeric = Number(entryItem.value_numeric);
+              status = classifyNumericValue(value_numeric, range);
+              applied_range_min = range?.min ?? null;
+              applied_range_max = range?.max ?? null;
+            }
 
-          if (resultType === 'boolean') {
-            value_boolean = item.value_boolean === 'true';
-            status = value_boolean ? 'positive' : 'negative';
-          }
+            if (resultType === 'boolean') {
+              value_boolean = entryItem.value_boolean === 'true';
+              status = value_boolean ? 'positive' : 'negative';
+            }
 
-          if (resultType === 'text') {
-            value_text = item.value_text.trim();
-            status = 'text';
-          }
+            if (resultType === 'text') {
+              value_text = entryItem.value_text.trim();
+              status = 'text';
+            }
 
-          return {
-            result_id: resultId,
-            parameter_id: param.id,
-            value_numeric,
-            value_boolean,
-            value_text,
-            observation: param.allow_observation ? item.observation.trim() || null : null,
-            status,
-            applied_range_min,
-            applied_range_max,
-          };
-        });
+            return {
+              result_id: resultId,
+              parameter_id: param.id,
+              value_numeric,
+              value_boolean,
+              value_text,
+              observation: param.allow_observation ? entryItem.observation.trim() || null : null,
+              status,
+              applied_range_min,
+              applied_range_max,
+            };
+          });
 
         const { error: detError } = await supabase
           .from('resultado_detalle')
@@ -1276,12 +1475,34 @@ export default function ResultsPage() {
 
             {orderDetails?.tests.map((test: any) => (
               <div key={test.id} className="space-y-4 border-l-4 border-primary/20 pl-4">
-                <h3 className="font-display font-bold text-lg text-slate-800 underline decoration-primary/30 underline-offset-4">
-                  {test.name}
-                </h3>
+                <div>
+                  <h3 className="font-display font-bold text-lg text-slate-800 underline decoration-primary/30 underline-offset-4">
+                    {test.name}
+                  </h3>
+
+                  {test.description?.trim() && (
+                    <p className="mt-1 text-sm text-slate-600">
+                      {test.description}
+                    </p>
+                  )}
+                </div>
 
                 <div className="space-y-4">
-                  {(test.parametros_prueba || []).map((param: any) => {
+                  {(test.structure_items || []).map((structureItem: any) => {
+                    if (structureItem.item_type === 'divider') {
+                      return (
+                        <div
+                          key={structureItem.id}
+                          className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-3"
+                        >
+                          <p className="font-display font-bold text-lg text-slate-800 underline decoration-primary/30 underline-offset-4">
+                            {structureItem.texto}
+                          </p>
+                        </div>
+                      );
+                    }
+
+                    const param = structureItem.parameter;
                     const item = entryValues[param.id] || emptyEntryValue();
                     const range = getAppliedRange(param, orderDetails.pacientes);
                     const status = getStatusPreview(param);

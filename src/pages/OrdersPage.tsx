@@ -192,6 +192,97 @@ export default function OrdersPage() {
     notes: '',
   });
 
+  const [assignDoctorDialogOpen, setAssignDoctorDialogOpen] = useState(false);
+  const [assigningDoctor, setAssigningDoctor] = useState(false);
+  const [doctorOrder, setDoctorOrder] = useState<any>(null);
+  const [doctorToAssign, setDoctorToAssign] = useState('');
+
+  const openAssignDoctorDialog = async (orderId: string) => {
+    try {
+      const { data: order, error } = await supabase
+        .from('ordenes')
+        .select(`
+          *,
+          pacientes(name, cedula, email),
+          doctores(nombre, especialidad),
+          orden_pagos(*)
+        `)
+        .eq('id', orderId)
+        .single();
+
+      if (error || !order) {
+        toast.error('No se pudo cargar la orden');
+        return;
+      }
+
+      setDoctorOrder(order);
+      setDoctorToAssign(order.doctor_id || '');
+      setAssignDoctorDialogOpen(true);
+    } catch (error: any) {
+      toast.error('Error al cargar la orden: ' + error.message);
+    }
+  };
+
+  const handleAssignDoctorToOrder = async () => {
+    if (!doctorOrder) return;
+
+    try {
+      setAssigningDoctor(true);
+
+      const { error } = await supabase
+        .from('ordenes')
+        .update({
+          doctor_id: doctorToAssign || null,
+        })
+        .eq('id', doctorOrder.id);
+
+      if (error) throw error;
+
+      toast.success(
+        doctorToAssign ? 'Médico asignado correctamente' : 'Médico removido correctamente'
+      );
+
+      await fetchInitialData();
+
+      const { data: updatedOrder } = await supabase
+        .from('ordenes')
+        .select(`
+          *,
+          pacientes(name, cedula, email),
+          doctores(nombre, especialidad),
+          orden_pagos(*),
+          orden_detalle(
+            test_id,
+            price,
+            subtotal_sin_impuesto,
+            valor_iva,
+            total_linea,
+            porcentaje_iva,
+            pruebas(name, price)
+          )
+        `)
+        .eq('id', doctorOrder.id)
+        .single();
+
+      if (updatedOrder) {
+        setDoctorOrder(updatedOrder);
+
+        if (selectedOrder?.id === updatedOrder.id) {
+          setSelectedOrder(updatedOrder);
+        }
+
+        if (paymentOrder?.id === updatedOrder.id) {
+          setPaymentOrder(updatedOrder);
+        }
+      }
+
+      setAssignDoctorDialogOpen(false);
+    } catch (error: any) {
+      toast.error('Error al guardar médico en la orden: ' + error.message);
+    } finally {
+      setAssigningDoctor(false);
+    }
+  };
   useEffect(() => {
     fetchInitialData();
   }, []);
@@ -348,7 +439,13 @@ export default function OrdersPage() {
       const nombre = String(t.name || '').toLowerCase();
       const descripcion = String(t.description || '').toLowerCase();
 
-      return nombre.includes(q) || descripcion.includes(q);
+      const coincideParametro = Array.isArray(t.parametros_prueba)
+        ? t.parametros_prueba.some((param: any) =>
+            String(param?.name || '').toLowerCase().includes(q)
+          )
+        : false;
+
+      return nombre.includes(q) || descripcion.includes(q) || coincideParametro;
     });
   }, [tests, testSearch]);
 
@@ -604,6 +701,7 @@ export default function OrdersPage() {
 
       if (data?.id) {
         setSelectedDoctor(data.id);
+        setDoctorToAssign(data.id);
       }
 
       setDoctorDialogOpen(false);
@@ -1792,6 +1890,15 @@ export default function OrdersPage() {
                         <Button
                           variant="ghost"
                           size="icon"
+                          onClick={() => openAssignDoctorDialog(order.id)}
+                          title={order.doctores?.nombre ? 'Editar médico' : 'Asignar médico'}
+                        >
+                          <Stethoscope className="w-4 h-4" />
+                        </Button>
+
+                        <Button
+                          variant="ghost"
+                          size="icon"
                           onClick={() => openPaymentDialog(order.id)}
                           title="Registrar pago"
                         >
@@ -2206,7 +2313,7 @@ export default function OrdersPage() {
                   <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
                   <Input
                     className="pl-10 h-12 rounded-xl border-slate-200 bg-white shadow-sm"
-                    placeholder="Buscar prueba por nombre..."
+                    placeholder="Buscar prueba o parámetro..."
                     value={testSearch}
                     onChange={(e) => setTestSearch(e.target.value)}
                   />
@@ -2338,7 +2445,7 @@ export default function OrdersPage() {
                       <div key={t.id} className="flex items-center justify-between text-sm">
                         <span>
                           {t.name}
-                          
+                          {t.cantidad > 1 }
                         </span>
                         <span>
                           ${Number(t.subtotal).toFixed(2)} + IVA ${Number(t.valorIva).toFixed(2)}
@@ -2915,6 +3022,14 @@ export default function OrdersPage() {
 
                   <Button
                     variant="outline"
+                    onClick={() => openAssignDoctorDialog(selectedOrder.id)}
+                  >
+                    <Stethoscope className="w-4 h-4 mr-2" />
+                    {selectedOrder.doctores?.nombre ? 'Editar médico' : 'Asignar médico'}
+                  </Button>
+
+                  <Button
+                    variant="outline"
                     onClick={() => openPaymentDialog(selectedOrder.id)}
                   >
                     <Wallet className="w-4 h-4 mr-2" />
@@ -2958,6 +3073,81 @@ export default function OrdersPage() {
                     Reimprimir Ticket
                   </Button>
                 </div>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={assignDoctorDialogOpen} onOpenChange={setAssignDoctorDialogOpen}>
+        <DialogContent className="sm:max-w-[560px]">
+          <DialogHeader>
+            <DialogTitle className="font-display text-xl">
+              {doctorOrder?.doctores?.nombre ? 'Editar médico de la orden' : 'Asignar médico a la orden'}
+            </DialogTitle>
+          </DialogHeader>
+
+          {doctorOrder && (
+            <div className="space-y-4 pt-4">
+              <div className="rounded-xl border bg-slate-50 p-4 space-y-2 text-sm">
+                <div><b>Orden:</b> {doctorOrder.code}</div>
+                <div><b>Paciente:</b> {doctorOrder.pacientes?.name}</div>
+                <div>
+                  <b>Médico actual:</b> {doctorOrder.doctores?.nombre || 'No asignado'}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label className="font-semibold text-xs uppercase tracking-wider">
+                  Médico
+                </Label>
+
+                <Select
+                  value={doctorToAssign || '__none__'}
+                  onValueChange={(value) =>
+                    setDoctorToAssign(value === '__none__' ? '' : value)
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Seleccione un médico" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__none__">Sin médico</SelectItem>
+                    {doctors.map((doctor) => (
+                      <SelectItem key={doctor.id} value={doctor.id}>
+                        {doctor.nombre}
+                        {doctor.especialidad ? ` — ${doctor.especialidad}` : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="flex gap-3">
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="flex-1"
+                  onClick={openCreateDoctor}
+                >
+                  <Plus className="w-4 h-4 mr-2" />
+                  Nuevo médico
+                </Button>
+
+                <Button
+                  onClick={handleAssignDoctorToOrder}
+                  className="flex-1 gradient-clinical text-primary-foreground border-0"
+                  disabled={assigningDoctor}
+                >
+                  {assigningDoctor ? (
+                    <>
+                      <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                      Guardando...
+                    </>
+                  ) : (
+                    'Guardar médico'
+                  )}
+                </Button>
               </div>
             </div>
           )}

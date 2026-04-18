@@ -7,11 +7,29 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Search, Eye, Plus, Pencil, Trash2, X, Loader2, ChevronDown, ChevronUp } from 'lucide-react';
+import { Search, Eye, Plus, Pencil, Trash2, X, Loader2, ChevronDown, ChevronUp, GripVertical } from 'lucide-react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from 'sonner';
 import { Checkbox } from '@/components/ui/checkbox';
+
+interface DividerForm {
+  id: string;
+  texto: string;
+  sort_order: string;
+}
+
+type StructureItem =
+  | {
+      id: string;
+      item_type: 'parameter';
+      parameter: ParameterForm;
+    }
+  | {
+      id: string;
+      item_type: 'divider';
+      divider: DividerForm;
+    };
 
 interface RangeForm {
   id: string;
@@ -41,6 +59,30 @@ interface ReagentForm {
   quantity_used: string;
 }
 
+const emptyDivider = (): DividerForm => ({
+  id: crypto.randomUUID(),
+  texto: '',
+  sort_order: '0',
+});
+
+const createParameterItem = (): StructureItem => {
+  const param = emptyParam();
+  return {
+    id: param.id,
+    item_type: 'parameter',
+    parameter: param,
+  };
+};
+
+const createDividerItem = (): StructureItem => {
+  const divider = emptyDivider();
+  return {
+    id: divider.id,
+    item_type: 'divider',
+    divider,
+  };
+};
+
 const emptyRange = (): RangeForm => ({
   id: crypto.randomUUID(),
   sex: 'both',
@@ -68,6 +110,21 @@ const emptyReagent = (): ReagentForm => ({
   reagent_id: '',
   quantity_used: '1',
 });
+
+function isParameterItem(item: StructureItem): item is Extract<StructureItem, { item_type: 'parameter' }> {
+  return item.item_type === 'parameter';
+}
+
+function isDividerItem(item: StructureItem): item is Extract<StructureItem, { item_type: 'divider' }> {
+  return item.item_type === 'divider';
+}
+
+function reorderItems<T>(list: T[], fromIndex: number, toIndex: number): T[] {
+  const copy = [...list];
+  const [moved] = copy.splice(fromIndex, 1);
+  copy.splice(toIndex, 0, moved);
+  return copy;
+}
 
 function safeNumber(value: any, fallback = 0): number {
   const n = Number(value);
@@ -99,8 +156,9 @@ export default function TestsPage() {
   const [price, setPrice] = useState('');
   const [porcentajeIva, setPorcentajeIva] = useState('15');
   const [objetoImpuesto, setObjetoImpuesto] = useState('2');
-  const [parameters, setParameters] = useState<ParameterForm[]>([emptyParam()]);
+  const [structureItems, setStructureItems] = useState<StructureItem[]>([createParameterItem()]);
   const [openParamId, setOpenParamId] = useState<string | null>(null);
+  const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
   const [testReagents, setTestReagents] = useState<ReagentForm[]>([]);
 
   const filtered = tests.filter(t => t.name.toLowerCase().includes(search.toLowerCase()));
@@ -117,6 +175,7 @@ export default function TestsPage() {
             *,
             ranges:rangos_referencia(*)
           ),
+          dividers:parametros_prueba_divisores(*),
           reagents:prueba_reactivos(*)
         `)
         .order('name');
@@ -143,14 +202,15 @@ export default function TestsPage() {
   }, []);
 
   const resetForm = () => {
-    const firstParam = emptyParam();
+    const firstItem = createParameterItem();
     setName('');
     setDescription('');
     setPrice('');
     setPorcentajeIva('15');
     setObjetoImpuesto('2');
-    setParameters([firstParam]);
-    setOpenParamId(firstParam.id);
+    setStructureItems([firstItem]);
+    setOpenParamId(firstItem.id);
+    setDraggedItemId(null);
     setTestReagents([]);
     setEditingId(null);
   };
@@ -168,37 +228,71 @@ export default function TestsPage() {
     setPorcentajeIva(String(test.porcentaje_iva ?? 15));
     setObjetoImpuesto(String(test.objeto_impuesto ?? '2'));
 
-    const mappedParams = (test.parameters?.length ? test.parameters : [emptyParam()]).map((p: any, index: number) => ({
+    const mappedParams: StructureItem[] = (test.parameters || []).map((p: any, index: number) => ({
       id: p.id || crypto.randomUUID(),
-      name: p.name || '',
-      unit: p.unit || '',
-      result_type: p.result_type || 'numeric',
-      bool_true_label: p.bool_true_label || 'Positivo',
-      bool_false_label: p.bool_false_label || 'Negativo',
-      allow_observation: !!p.allow_observation,
-      sort_order: String(p.sort_order ?? index),
-      default_value: p.valor_default || '',
-      default_boolean:
-        p.valor_default_boolean === true
-          ? 'true'
-          : p.valor_default_boolean === false
-          ? 'false'
-          : '',
-      ranges:
-        p.result_type === 'numeric'
-          ? (p.ranges?.length ? p.ranges : [emptyRange()]).map((r: any) => ({
-              id: r.id || crypto.randomUUID(),
-              sex: r.sex,
-              min_age: String(r.min_age ?? 0),
-              max_age: String(r.max_age ?? 120),
-              min_value: String(r.min_value ?? ''),
-              max_value: String(r.max_value ?? ''),
-            }))
-          : [],
+      item_type: 'parameter',
+      parameter: {
+        id: p.id || crypto.randomUUID(),
+        name: p.name || '',
+        unit: p.unit || '',
+        result_type: p.result_type || 'numeric',
+        bool_true_label: p.bool_true_label || 'Positivo',
+        bool_false_label: p.bool_false_label || 'Negativo',
+        allow_observation: !!p.allow_observation,
+        sort_order: String(p.sort_order ?? index),
+        default_value: p.valor_default || '',
+        default_boolean:
+          p.valor_default_boolean === true
+            ? 'true'
+            : p.valor_default_boolean === false
+            ? 'false'
+            : '',
+        ranges:
+          p.result_type === 'numeric'
+            ? (p.ranges?.length ? p.ranges : [emptyRange()]).map((r: any) => ({
+                id: r.id || crypto.randomUUID(),
+                sex: r.sex,
+                min_age: String(r.min_age ?? 0),
+                max_age: String(r.max_age ?? 120),
+                min_value: String(r.min_value ?? ''),
+                max_value: String(r.max_value ?? ''),
+              }))
+            : [],
+      },
     }));
 
-    setParameters(mappedParams);
-    setOpenParamId(mappedParams[0]?.id || null);
+    const mappedDividers: StructureItem[] = (test.dividers || [])
+      .filter((d: any) => d.activo !== false)
+      .map((d: any, index: number) => ({
+        id: d.id || crypto.randomUUID(),
+        item_type: 'divider',
+        divider: {
+          id: d.id || crypto.randomUUID(),
+          texto: d.texto || '',
+          sort_order: String(d.sort_order ?? index),
+        },
+      }));
+
+    const combined = [...mappedParams, ...mappedDividers].sort((a, b) => {
+      const aOrder =
+        a.item_type === 'parameter'
+          ? Number(a.parameter.sort_order ?? 0)
+          : Number(a.divider.sort_order ?? 0);
+
+      const bOrder =
+        b.item_type === 'parameter'
+          ? Number(b.parameter.sort_order ?? 0)
+          : Number(b.divider.sort_order ?? 0);
+
+      return aOrder - bOrder;
+    });
+
+    const finalItems = combined.length ? combined : [createParameterItem()];
+
+    setStructureItems(finalItems);
+
+    const firstOpenParam = finalItems.find(item => item.item_type === 'parameter');
+    setOpenParamId(firstOpenParam?.id || null);
 
     setTestReagents(
       (test.reagents || []).map((r: any) => ({
@@ -211,12 +305,17 @@ export default function TestsPage() {
   };
 
   const handleSave = async () => {
-    if (!name.trim() || !price.trim()) {
-      toast.error('Nombre y precio son obligatorios');
+    const parameterItems = structureItems.filter(isParameterItem);
+    const dividerItems = structureItems.filter(isDividerItem);
+
+    if (parameterItems.length === 0) {
+      toast.error('Debes agregar al menos un parámetro');
       return;
     }
 
-    for (const p of parameters) {
+    for (const item of parameterItems) {
+      const p = item.parameter;
+
       if (!p.name.trim()) {
         toast.error('Todos los parámetros deben tener nombre');
         return;
@@ -234,6 +333,13 @@ export default function TestsPage() {
             return;
           }
         }
+      }
+    }
+
+    for (const item of dividerItems) {
+      if (!item.divider.texto.trim()) {
+        toast.error('Todos los divisores deben tener texto');
+        return;
       }
     }
 
@@ -275,50 +381,79 @@ export default function TestsPage() {
         .delete()
         .eq('test_id', testId);
 
+      const { error: deleteDividersError } = await supabase
+        .from('parametros_prueba_divisores')
+        .delete()
+        .eq('test_id', testId);
+
+      if (deleteDividersError) throw deleteDividersError;
+
       if (deleteParamsError) throw deleteParamsError;
 
-      for (const p of parameters) {
-        const { data: pData, error: pError } = await supabase
-          .from('parametros_prueba')
-          .insert({
-            test_id: testId,
-            name: p.name.trim(),
-            unit: p.result_type === 'numeric' ? p.unit.trim() : null,
-            result_type: p.result_type,
-            bool_true_label: p.result_type === 'boolean' ? p.bool_true_label.trim() || 'Positivo' : null,
-            bool_false_label: p.result_type === 'boolean' ? p.bool_false_label.trim() || 'Negativo' : null,
-            valor_default: p.result_type === 'text' ? (p.default_value.trim() || null) : null,
-            valor_default_boolean:
-              p.result_type === 'boolean'
-                ? p.default_boolean === 'true'
-                  ? true
-                  : p.default_boolean === 'false'
-                  ? false
-                  : null
-                : null,
-            allow_observation: !!p.allow_observation,
-            sort_order: Number(p.sort_order || 0),
-          })
-          .select()
-          .single();
+      for (let index = 0; index < structureItems.length; index++) {
+        const item = structureItems[index];
+        const visualOrder = index;
 
-        if (pError) throw pError;
+        if (item.item_type === 'parameter') {
+          const p = item.parameter;
 
-        if (p.result_type === 'numeric' && p.ranges.length > 0) {
-          const rangesToInsert = p.ranges.map(r => ({
-            parameter_id: pData.id,
-            sex: r.sex,
-            min_age: Number(r.min_age),
-            max_age: Number(r.max_age),
-            min_value: Number(r.min_value),
-            max_value: Number(r.max_value),
-          }));
+          const { data: pData, error: pError } = await supabase
+            .from('parametros_prueba')
+            .insert({
+              test_id: testId,
+              name: p.name.trim(),
+              unit: p.result_type === 'numeric' ? p.unit.trim() : null,
+              result_type: p.result_type,
+              bool_true_label: p.result_type === 'boolean' ? p.bool_true_label.trim() || 'Positivo' : null,
+              bool_false_label: p.result_type === 'boolean' ? p.bool_false_label.trim() || 'Negativo' : null,
+              valor_default: p.result_type === 'text' ? (p.default_value.trim() || null) : null,
+              valor_default_boolean:
+                p.result_type === 'boolean'
+                  ? p.default_boolean === 'true'
+                    ? true
+                    : p.default_boolean === 'false'
+                    ? false
+                    : null
+                  : null,
+              allow_observation: !!p.allow_observation,
+              sort_order: visualOrder,
+            })
+            .select()
+            .single();
 
-          const { error: rangesError } = await supabase
-            .from('rangos_referencia')
-            .insert(rangesToInsert);
+          if (pError) throw pError;
 
-          if (rangesError) throw rangesError;
+          if (p.result_type === 'numeric' && p.ranges.length > 0) {
+            const rangesToInsert = p.ranges.map(r => ({
+              parameter_id: pData.id,
+              sex: r.sex,
+              min_age: Number(r.min_age),
+              max_age: Number(r.max_age),
+              min_value: Number(r.min_value),
+              max_value: Number(r.max_value),
+            }));
+
+            const { error: rangesError } = await supabase
+              .from('rangos_referencia')
+              .insert(rangesToInsert);
+
+            if (rangesError) throw rangesError;
+          }
+        }
+
+        if (item.item_type === 'divider') {
+          const d = item.divider;
+
+          const { error: dividerError } = await supabase
+            .from('parametros_prueba_divisores')
+            .insert({
+              test_id: testId,
+              texto: d.texto.trim(),
+              sort_order: visualOrder,
+              activo: true,
+            });
+
+          if (dividerError) throw dividerError;
         }
       }
 
@@ -362,12 +497,40 @@ export default function TestsPage() {
     }
   };
 
-  const updateParam = (idx: number, field: keyof ParameterForm, value: any) => {
-    setParameters(prev =>
-      prev.map((p, i) => {
-        if (i !== idx) return p;
+  const handleDragStart = (itemId: string) => {
+    setDraggedItemId(itemId);
+  };
 
-        const updated = { ...p, [field]: value };
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+  };
+
+  const handleDrop = (targetItemId: string) => {
+    if (!draggedItemId || draggedItemId === targetItemId) return;
+
+    setStructureItems(prev => {
+      const fromIndex = prev.findIndex(item => item.id === draggedItemId);
+      const toIndex = prev.findIndex(item => item.id === targetItemId);
+
+      if (fromIndex === -1 || toIndex === -1) return prev;
+
+      return reorderItems(prev, fromIndex, toIndex);
+    });
+
+    setDraggedItemId(null);
+  };
+
+  const handleDragEnd = () => {
+    setDraggedItemId(null);
+  };
+
+  const updateParam = (itemId: string, field: keyof ParameterForm, value: any) => {
+    setStructureItems(prev =>
+      prev.map(item => {
+        if (item.item_type !== 'parameter' || item.id !== itemId) return item;
+
+        const p = item.parameter;
+        const updated: ParameterForm = { ...p, [field]: value };
 
         if (field === 'result_type') {
           if (value === 'numeric') {
@@ -392,21 +555,45 @@ export default function TestsPage() {
           }
         }
 
-        return updated;
+        return {
+          ...item,
+          parameter: updated,
+        };
       })
     );
   };
 
-  const updateRange = (pIdx: number, rIdx: number, field: keyof RangeForm, value: any) => {
-    setParameters(prev =>
-      prev.map((p, pi) =>
-        pi === pIdx
+  const updateDivider = (itemId: string, field: keyof DividerForm, value: any) => {
+    setStructureItems(prev =>
+      prev.map(item =>
+        item.item_type === 'divider' && item.id === itemId
           ? {
-              ...p,
-              ranges: p.ranges.map((r, ri) => (ri === rIdx ? { ...r, [field]: value } : r)),
+              ...item,
+              divider: {
+                ...item.divider,
+                [field]: value,
+              },
             }
-          : p
+          : item
       )
+    );
+  };
+
+  const updateRange = (itemId: string, rIdx: number, field: keyof RangeForm, value: any) => {
+    setStructureItems(prev =>
+      prev.map(item => {
+        if (item.item_type !== 'parameter' || item.id !== itemId) return item;
+
+        return {
+          ...item,
+          parameter: {
+            ...item.parameter,
+            ranges: item.parameter.ranges.map((r, ri) =>
+              ri === rIdx ? { ...r, [field]: value } : r
+            ),
+          },
+        };
+      })
     );
   };
 
@@ -414,33 +601,44 @@ export default function TestsPage() {
     setTestReagents(prev => prev.map((r, i) => (i === idx ? { ...r, [field]: value } : r)));
   };
 
-  const removeParameter = (pIdx: number) => {
-    setParameters(prev => {
-      const removed = prev[pIdx];
-      const next = prev.filter((_, i) => i !== pIdx);
+  const removeParameter = (itemId: string) => {
+    setStructureItems(prev => {
+      const next = prev.filter(item => item.id !== itemId);
 
-      if (next.length === 0) {
-        const newParam = emptyParam();
+      const hasParameter = next.some(item => item.item_type === 'parameter');
+
+      if (!hasParameter) {
+        const newParam = createParameterItem();
         setOpenParamId(newParam.id);
-        return [newParam];
+        return [...next, newParam];
       }
 
-      if (removed?.id === openParamId) {
-        setOpenParamId(next[0].id);
+      if (openParamId === itemId) {
+        const nextOpen = next.find(item => item.item_type === 'parameter');
+        setOpenParamId(nextOpen?.id || null);
       }
 
       return next;
     });
   };
 
-  const removeRange = (pIdx: number, rIdx: number) => {
-    setParameters(prev =>
-      prev.map((p, pi) => {
-        if (pi !== pIdx) return p;
-        const nextRanges = p.ranges.filter((_, ri) => ri !== rIdx);
+  const removeDivider = (itemId: string) => {
+    setStructureItems(prev => prev.filter(item => item.id !== itemId));
+  };
+
+  const removeRange = (itemId: string, rIdx: number) => {
+    setStructureItems(prev =>
+      prev.map(item => {
+        if (item.item_type !== 'parameter' || item.id !== itemId) return item;
+
+        const nextRanges = item.parameter.ranges.filter((_, ri) => ri !== rIdx);
+
         return {
-          ...p,
-          ranges: nextRanges.length > 0 ? nextRanges : [emptyRange()],
+          ...item,
+          parameter: {
+            ...item.parameter,
+            ranges: nextRanges.length > 0 ? nextRanges : [emptyRange()],
+          },
         };
       })
     );
@@ -559,70 +757,101 @@ export default function TestsPage() {
                   Parámetros <Badge variant="secondary">Config</Badge>
                 </h4>
 
-                {(selectedTest.parameters || []).map((param: any) => (
-                  <div key={param.id} className="mb-4 p-4 rounded-xl border bg-slate-50/50">
-                    <p className="font-bold text-slate-700">
-                      {param.name}
-                      <span className="text-muted-foreground font-normal ml-2">
-                        [{param.result_type || 'numeric'}]
-                      </span>
-                      {param.unit ? (
-                        <span className="text-muted-foreground font-normal ml-2">({param.unit})</span>
-                      ) : null}
-                    </p>
-
-                    {param.result_type === 'numeric' && (
-                      <div className="mt-2 grid grid-cols-1 gap-1">
-                        {(param.ranges || []).map((r: any) => (
-                          <p
-                            key={r.id}
-                            className="text-xs text-slate-500 bg-white p-2 rounded border border-slate-100 flex justify-between"
-                          >
-                            <span>
-                              {r.sex === 'both' ? 'Ambos' : r.sex === 'M' ? 'Masculino' : 'Femenino'} | {r.min_age}-{r.max_age} años
-                            </span>
-                            <span className="font-bold text-slate-800">
-                              {r.min_value} - {r.max_value} {param.unit}
-                            </span>
+                {[...(selectedTest.parameters || []).map((p: any) => ({
+                  item_type: 'parameter',
+                  sort_order: Number(p.sort_order ?? 0),
+                  data: p,
+                })),
+                ...(selectedTest.dividers || [])
+                  .filter((d: any) => d.activo !== false)
+                  .map((d: any) => ({
+                    item_type: 'divider',
+                    sort_order: Number(d.sort_order ?? 0),
+                    data: d,
+                  })),
+                ]
+                  .sort((a, b) => a.sort_order - b.sort_order)
+                  .map((item: any, idx: number) => {
+                    if (item.item_type === 'divider') {
+                      return (
+                        <div
+                          key={`divider-${item.data.id}-${idx}`}
+                          className="my-4 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3"
+                        >
+                          <p className="text-sm font-bold uppercase tracking-wide text-amber-700">
+                            {item.data.texto}
                           </p>
-                        ))}
-                      </div>
-                    )}
-
-                    {param.result_type === 'boolean' && (
-                      <div className="mt-2 space-y-2">
-                        <div className="flex gap-2">
-                          <Badge variant="outline">{param.bool_true_label || 'Positivo'}</Badge>
-                          <Badge variant="outline">{param.bool_false_label || 'Negativo'}</Badge>
                         </div>
+                      );
+                    }
 
-                        {param.valor_default_boolean !== null && param.valor_default_boolean !== undefined && (
-                          <p className="text-xs text-slate-700 bg-white p-2 rounded border">
-                            <span className="font-semibold">Valor por defecto:</span>{' '}
-                            {param.valor_default_boolean
-                              ? param.bool_true_label || 'Positivo'
-                              : param.bool_false_label || 'Negativo'}
-                          </p>
+                    const param = item.data;
+
+                    return (
+                      <div key={param.id} className="mb-4 p-4 rounded-xl border bg-slate-50/50">
+                        <p className="font-bold text-slate-700">
+                          {param.name}
+                          <span className="text-muted-foreground font-normal ml-2">
+                            [{param.result_type || 'numeric'}]
+                          </span>
+                          {param.unit ? (
+                            <span className="text-muted-foreground font-normal ml-2">({param.unit})</span>
+                          ) : null}
+                        </p>
+
+                        {param.result_type === 'numeric' && (
+                          <div className="mt-2 grid grid-cols-1 gap-1">
+                            {(param.ranges || []).map((r: any) => (
+                              <p
+                                key={r.id}
+                                className="text-xs text-slate-500 bg-white p-2 rounded border border-slate-100 flex justify-between"
+                              >
+                                <span>
+                                  {r.sex === 'both' ? 'Ambos' : r.sex === 'M' ? 'Masculino' : 'Femenino'} | {r.min_age}-{r.max_age} años
+                                </span>
+                                <span className="font-bold text-slate-800">
+                                  {r.min_value} - {r.max_value} {param.unit}
+                                </span>
+                              </p>
+                            ))}
+                          </div>
+                        )}
+
+                        {param.result_type === 'boolean' && (
+                          <div className="mt-2 space-y-2">
+                            <div className="flex gap-2">
+                              <Badge variant="outline">{param.bool_true_label || 'Positivo'}</Badge>
+                              <Badge variant="outline">{param.bool_false_label || 'Negativo'}</Badge>
+                            </div>
+
+                            {param.valor_default_boolean !== null && param.valor_default_boolean !== undefined && (
+                              <p className="text-xs text-slate-700 bg-white p-2 rounded border">
+                                <span className="font-semibold">Valor por defecto:</span>{' '}
+                                {param.valor_default_boolean
+                                  ? param.bool_true_label || 'Positivo'
+                                  : param.bool_false_label || 'Negativo'}
+                              </p>
+                            )}
+                          </div>
+                        )}
+
+                        {param.result_type === 'text' && (
+                          <div className="mt-2 space-y-1">
+                            <p className="text-xs text-slate-500">Valor textual libre</p>
+                            {param.valor_default && (
+                              <p className="text-xs text-slate-700 bg-white p-2 rounded border">
+                                <span className="font-semibold">Valor por defecto:</span> {param.valor_default}
+                              </p>
+                            )}
+                          </div>
+                        )}
+
+                        {param.allow_observation && (
+                          <p className="text-xs text-amber-600 mt-2">Permite observación</p>
                         )}
                       </div>
-                    )}
-                  
-                    {param.result_type === 'text' && (
-                      <div className="mt-2 space-y-1">
-                        <p className="text-xs text-slate-500">Valor textual libre</p>
-                        {param.valor_default && (
-                          <p className="text-xs text-slate-700 bg-white p-2 rounded border">
-                            <span className="font-semibold">Valor por defecto:</span> {param.valor_default}
-                          </p>
-                        )}
-                      </div>
-                    )}
-
-                    {param.allow_observation && (
-                      <p className="text-xs text-amber-600 mt-2">Permite observación</p>
-                    )}
-                  </div>
-                ))}
+                    );
+                  })}
               </div>
             </div>
           )}
@@ -700,46 +929,133 @@ export default function TestsPage() {
             </div>
 
             <div className="space-y-4">
-              <div className="flex items-center justify-between border-b pb-2">
-                <h4 className="font-bold">Configuración de Parámetros</h4>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => {
-                    const newParam = emptyParam();
-                    setParameters(prev => [newParam, ...prev]);
-                    setOpenParamId(newParam.id);
-                  }}
-                >
-                  <Plus className="w-3 h-3 mr-1" />
-                  Parámetro
-                </Button>
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b pb-2">
+                <h4 className="font-bold">Estructura de la Prueba</h4>
+
+                <div className="flex gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const newItem = createParameterItem();
+                      setStructureItems(prev => [...prev, newItem]);
+                      setOpenParamId(newItem.id);
+                    }}
+                  >
+                    <Plus className="w-3 h-3 mr-1" />
+                    Parámetro
+                  </Button>
+
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      const newItem = createDividerItem();
+                      setStructureItems(prev => [...prev, newItem]);
+                    }}
+                  >
+                    <Plus className="w-3 h-3 mr-1" />
+                    Divisor
+                  </Button>
+                </div>
               </div>
 
-              {parameters.map((param, pIdx) => {
-                const isOpen = openParamId === param.id;
+              {structureItems.map((item, index) => {
+                const isDragged = draggedItemId === item.id;
+
+                if (item.item_type === 'divider') {
+                  const divider = item.divider;
+
+                  return (
+                    <div
+                      key={item.id}
+                      draggable
+                      onDragStart={() => handleDragStart(item.id)}
+                      onDragOver={handleDragOver}
+                      onDrop={() => handleDrop(item.id)}
+                      onDragEnd={handleDragEnd}
+                      className={`border-2 rounded-2xl overflow-hidden bg-amber-50/60 border-amber-200 transition ${
+                        isDragged ? 'opacity-50' : ''
+                      }`}
+                    >
+                      <div className="flex items-center gap-3 p-4">
+                        <button
+                          type="button"
+                          className="cursor-grab active:cursor-grabbing text-slate-400 hover:text-slate-600"
+                          title="Arrastrar"
+                        >
+                          <GripVertical className="w-5 h-5" />
+                        </button>
+
+                        <div className="flex-1">
+                          <div className="text-xs font-bold uppercase text-amber-600 tracking-widest mb-1">
+                            Divisor #{index + 1}
+                          </div>
+                          <Input
+                            value={divider.texto}
+                            onChange={e => updateDivider(item.id, 'texto', e.target.value)}
+                            placeholder="Ej: SEROLOGÍA, HEMATOLOGÍA, BIOQUÍMICA..."
+                            className="bg-white"
+                          />
+                        </div>
+
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-red-400"
+                          onClick={() => removeDivider(item.id)}
+                        >
+                          <X className="w-4 h-4" />
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                }
+
+                const param = item.parameter;
+                const isOpen = openParamId === item.id;
 
                 return (
-                  <div key={param.id} className="border-2 border-slate-100 rounded-2xl bg-slate-50/20 overflow-hidden">
+                  <div
+                    key={item.id}
+                    draggable
+                    onDragStart={() => handleDragStart(item.id)}
+                    onDragOver={handleDragOver}
+                    onDrop={() => handleDrop(item.id)}
+                    onDragEnd={handleDragEnd}
+                    className={`border-2 border-slate-100 rounded-2xl bg-slate-50/20 overflow-hidden transition ${
+                      isDragged ? 'opacity-50' : ''
+                    }`}
+                  >
                     <button
                       type="button"
                       className="w-full p-4 flex items-center justify-between text-left hover:bg-slate-100/60 transition"
-                      onClick={() => toggleAccordion(param.id)}
+                      onClick={() => toggleAccordion(item.id)}
                     >
-                      <div className="pr-4">
-                        <div className="text-xs font-bold uppercase text-slate-400 tracking-widest">
-                          Parámetro #{pIdx + 1}
-                        </div>
-                        <div className="mt-1 font-semibold text-slate-700">
-                          {param.name?.trim() || 'Nuevo parámetro'}
-                        </div>
-                        <div className="text-xs text-muted-foreground">
-                          Tipo: {param.result_type} • Orden: {param.sort_order}
+                      <div className="flex items-center gap-3 pr-4">
+                        <span
+                          className="cursor-grab active:cursor-grabbing text-slate-400 hover:text-slate-600"
+                          onClick={e => e.stopPropagation()}
+                        >
+                          <GripVertical className="w-5 h-5" />
+                        </span>
+
+                        <div>
+                          <div className="text-xs font-bold uppercase text-slate-400 tracking-widest">
+                            Parámetro #{index + 1}
+                          </div>
+                          <div className="mt-1 font-semibold text-slate-700">
+                            {param.name?.trim() || 'Nuevo parámetro'}
+                          </div>
+                          <div className="text-xs text-muted-foreground">
+                            Tipo: {param.result_type}
+                          </div>
                         </div>
                       </div>
 
                       <div className="flex items-center gap-2">
-                        {parameters.length > 1 && (
+                        {structureItems.filter(i => i.item_type === 'parameter').length > 1 && (
                           <Button
                             type="button"
                             variant="ghost"
@@ -747,30 +1063,39 @@ export default function TestsPage() {
                             className="h-8 w-8 text-red-400"
                             onClick={e => {
                               e.stopPropagation();
-                              removeParameter(pIdx);
+                              removeParameter(item.id);
                             }}
                           >
                             <X className="w-4 h-4" />
                           </Button>
                         )}
 
-                        {isOpen ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+                        {isOpen ? (
+                          <ChevronUp className="w-4 h-4 text-slate-500" />
+                        ) : (
+                          <ChevronDown className="w-4 h-4 text-slate-500" />
+                        )}
                       </div>
                     </button>
 
                     {isOpen && (
                       <div className="px-4 pb-4 border-t bg-white/70">
-                        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-4 mt-4">
+                        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4 mt-4">
                           <div>
                             <Label className="text-xs font-semibold">Nombre</Label>
-                            <Input value={param.name} onChange={e => updateParam(pIdx, 'name', e.target.value)} />
+                            <Input
+                              value={param.name}
+                              onChange={e => updateParam(item.id, 'name', e.target.value)}
+                            />
                           </div>
 
                           <div>
                             <Label className="text-xs font-semibold">Tipo de resultado</Label>
                             <Select
                               value={param.result_type}
-                              onValueChange={v => updateParam(pIdx, 'result_type', v as 'numeric' | 'boolean' | 'text')}
+                              onValueChange={v =>
+                                updateParam(item.id, 'result_type', v as 'numeric' | 'boolean' | 'text')
+                              }
                             >
                               <SelectTrigger>
                                 <SelectValue />
@@ -787,18 +1112,9 @@ export default function TestsPage() {
                             <Label className="text-xs font-semibold">Unidad</Label>
                             <Input
                               value={param.unit}
-                              onChange={e => updateParam(pIdx, 'unit', e.target.value)}
+                              onChange={e => updateParam(item.id, 'unit', e.target.value)}
                               disabled={param.result_type !== 'numeric'}
                               placeholder={param.result_type === 'numeric' ? 'mg/dL, %, etc.' : 'No aplica'}
-                            />
-                          </div>
-
-                          <div>
-                            <Label className="text-xs font-semibold">Orden</Label>
-                            <Input
-                              type="number"
-                              value={param.sort_order}
-                              onChange={e => updateParam(pIdx, 'sort_order', e.target.value)}
                             />
                           </div>
                         </div>
@@ -808,7 +1124,7 @@ export default function TestsPage() {
                             <Label className="text-xs font-semibold">Valor por defecto</Label>
                             <Input
                               value={param.default_value}
-                              onChange={e => updateParam(pIdx, 'default_value', e.target.value)}
+                              onChange={e => updateParam(item.id, 'default_value', e.target.value)}
                               placeholder="Ej: No se observan alteraciones"
                             />
                           </div>
@@ -820,7 +1136,7 @@ export default function TestsPage() {
                               <Label className="text-xs font-semibold">Etiqueta verdadero</Label>
                               <Input
                                 value={param.bool_true_label}
-                                onChange={e => updateParam(pIdx, 'bool_true_label', e.target.value)}
+                                onChange={e => updateParam(item.id, 'bool_true_label', e.target.value)}
                                 placeholder="Ej: Positivo / Sí / Presencia"
                               />
                             </div>
@@ -829,7 +1145,7 @@ export default function TestsPage() {
                               <Label className="text-xs font-semibold">Etiqueta falso</Label>
                               <Input
                                 value={param.bool_false_label}
-                                onChange={e => updateParam(pIdx, 'bool_false_label', e.target.value)}
+                                onChange={e => updateParam(item.id, 'bool_false_label', e.target.value)}
                                 placeholder="Ej: Negativo / No / Ausencia"
                               />
                             </div>
@@ -840,7 +1156,7 @@ export default function TestsPage() {
                                 value={param.default_boolean || 'none'}
                                 onValueChange={value =>
                                   updateParam(
-                                    pIdx,
+                                    item.id,
                                     'default_boolean',
                                     value === 'none' ? '' : (value as '' | 'true' | 'false')
                                   )
@@ -866,7 +1182,7 @@ export default function TestsPage() {
                         <div className="flex items-center gap-2 mb-4">
                           <Checkbox
                             checked={param.allow_observation}
-                            onCheckedChange={checked => updateParam(pIdx, 'allow_observation', !!checked)}
+                            onCheckedChange={checked => updateParam(item.id, 'allow_observation', !!checked)}
                           />
                           <Label className="text-xs font-semibold">Permitir observación para este parámetro</Label>
                         </div>
@@ -880,9 +1196,17 @@ export default function TestsPage() {
                                 variant="ghost"
                                 className="h-6 text-[10px]"
                                 onClick={() => {
-                                  setParameters(prev =>
-                                    prev.map((p, pi) =>
-                                      pi === pIdx ? { ...p, ranges: [emptyRange(), ...p.ranges] } : p
+                                  setStructureItems(prev =>
+                                    prev.map(current =>
+                                      current.item_type === 'parameter' && current.id === item.id
+                                        ? {
+                                            ...current,
+                                            parameter: {
+                                              ...current.parameter,
+                                              ranges: [emptyRange(), ...current.parameter.ranges],
+                                            },
+                                          }
+                                        : current
                                     )
                                   );
                                 }}
@@ -895,7 +1219,10 @@ export default function TestsPage() {
                               <div key={range.id} className="grid grid-cols-6 gap-2 items-end bg-white p-2 rounded-lg border">
                                 <div className="col-span-1">
                                   <Label className="text-[10px]">Sexo</Label>
-                                  <Select value={range.sex} onValueChange={v => updateRange(pIdx, rIdx, 'sex', v as any)}>
+                                  <Select
+                                    value={range.sex}
+                                    onValueChange={v => updateRange(item.id, rIdx, 'sex', v as any)}
+                                  >
                                     <SelectTrigger className="h-8 text-xs">
                                       <SelectValue />
                                     </SelectTrigger>
@@ -912,7 +1239,7 @@ export default function TestsPage() {
                                   <Input
                                     className="h-8 text-xs"
                                     value={range.min_age}
-                                    onChange={e => updateRange(pIdx, rIdx, 'min_age', e.target.value)}
+                                    onChange={e => updateRange(item.id, rIdx, 'min_age', e.target.value)}
                                   />
                                 </div>
 
@@ -921,7 +1248,7 @@ export default function TestsPage() {
                                   <Input
                                     className="h-8 text-xs"
                                     value={range.max_age}
-                                    onChange={e => updateRange(pIdx, rIdx, 'max_age', e.target.value)}
+                                    onChange={e => updateRange(item.id, rIdx, 'max_age', e.target.value)}
                                   />
                                 </div>
 
@@ -930,7 +1257,7 @@ export default function TestsPage() {
                                   <Input
                                     className="h-8 text-xs"
                                     value={range.min_value}
-                                    onChange={e => updateRange(pIdx, rIdx, 'min_value', e.target.value)}
+                                    onChange={e => updateRange(item.id, rIdx, 'min_value', e.target.value)}
                                   />
                                 </div>
 
@@ -939,7 +1266,7 @@ export default function TestsPage() {
                                   <Input
                                     className="h-8 text-xs"
                                     value={range.max_value}
-                                    onChange={e => updateRange(pIdx, rIdx, 'max_value', e.target.value)}
+                                    onChange={e => updateRange(item.id, rIdx, 'max_value', e.target.value)}
                                   />
                                 </div>
 
@@ -949,7 +1276,7 @@ export default function TestsPage() {
                                     variant="ghost"
                                     size="icon"
                                     className="h-8 w-8 text-red-300"
-                                    onClick={() => removeRange(pIdx, rIdx)}
+                                    onClick={() => removeRange(item.id, rIdx)}
                                   >
                                     <Trash2 className="w-3 h-3" />
                                   </Button>
