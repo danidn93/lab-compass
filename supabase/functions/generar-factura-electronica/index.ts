@@ -521,6 +521,71 @@ function agruparDetallesExamenes(
   }));
 }
 
+function agruparDetallesFactura(
+  detalles: Array<{
+    test_id?: string | null;
+    descripcion: string;
+    cantidad: number;
+    precioUnitario: number;
+    precioTotalSinImpuesto: number;
+    baseImponible: number;
+    codigoPorcentaje: string;
+    tarifa: number;
+    valorIva: number;
+  }>,
+) {
+  const mapa = new Map<string, {
+    test_id?: string | null;
+    descripcion: string;
+    cantidad: number;
+    precioTotalSinImpuesto: number;
+    baseImponible: number;
+    codigoPorcentaje: string;
+    tarifa: number;
+    valorIva: number;
+  }>();
+
+  for (const d of detalles || []) {
+    const descripcion = String(d.descripcion || "Examen de laboratorio").trim();
+    const key = [
+      descripcion.toLowerCase(),
+      String(d.codigoPorcentaje || ""),
+      Number(d.tarifa || 0).toFixed(2),
+    ].join("|");
+
+    if (!mapa.has(key)) {
+      mapa.set(key, {
+        test_id: d.test_id || null,
+        descripcion,
+        cantidad: 0,
+        precioTotalSinImpuesto: 0,
+        baseImponible: 0,
+        codigoPorcentaje: String(d.codigoPorcentaje || ""),
+        tarifa: round2(Number(d.tarifa || 0)),
+        valorIva: 0,
+      });
+    }
+
+    const item = mapa.get(key)!;
+    item.cantidad += Number(d.cantidad || 0);
+    item.precioTotalSinImpuesto += Number(d.precioTotalSinImpuesto || 0);
+    item.baseImponible += Number(d.baseImponible || 0);
+    item.valorIva += Number(d.valorIva || 0);
+  }
+
+  return Array.from(mapa.values()).map((item) => ({
+    ...item,
+    cantidad: round2(item.cantidad),
+    precioTotalSinImpuesto: round2(item.precioTotalSinImpuesto),
+    baseImponible: round2(item.baseImponible),
+    valorIva: round2(item.valorIva),
+    precioUnitario:
+      item.cantidad > 0
+        ? round2(item.precioTotalSinImpuesto / item.cantidad)
+        : 0,
+  }));
+}
+
 function buildFacturaXml(params: {
   configFE: any;
   order: any;
@@ -711,6 +776,69 @@ async function generarRidePdf(params: {
   const safe = (v: any) => String(v ?? "").trim();
   const money = (v?: number | null) => Number(v || 0).toFixed(2);
 
+  const agruparDetallesRide = (
+    detalles: Array<{
+      codigoPrincipal?: string;
+      codigoAuxiliar?: string;
+      cantidad: number;
+      descripcion: string;
+      detalleAdicional?: string;
+      precioUnitario: number;
+      subsidio?: number;
+      precioSinSubsidio?: number;
+      descuento?: number;
+      precioTotal: number;
+    }>
+  ) => {
+    const mapa = new Map<string, {
+      codigoPrincipal?: string;
+      codigoAuxiliar?: string;
+      cantidad: number;
+      descripcion: string;
+      detalleAdicional?: string;
+      precioUnitario: number;
+      subsidio?: number;
+      precioSinSubsidio?: number;
+      descuento?: number;
+      precioTotal: number;
+    }>();
+
+    for (const item of detalles || []) {
+      const descripcion = safe(item?.descripcion || "Item");
+      const detalleAdicional = safe(item?.detalleAdicional || "");
+      const key = `${descripcion.toLowerCase()}|${detalleAdicional.toLowerCase()}|${Number(item?.precioUnitario || 0).toFixed(2)}`;
+
+      if (!mapa.has(key)) {
+        mapa.set(key, {
+          codigoPrincipal: item?.codigoPrincipal,
+          codigoAuxiliar: item?.codigoAuxiliar,
+          cantidad: 0,
+          descripcion,
+          detalleAdicional,
+          precioUnitario: round2(Number(item?.precioUnitario || 0)),
+          subsidio: round2(Number(item?.subsidio || 0)),
+          precioSinSubsidio: round2(Number(item?.precioSinSubsidio || 0)),
+          descuento: round2(Number(item?.descuento || 0)),
+          precioTotal: 0,
+        });
+      }
+
+      const actual = mapa.get(key)!;
+      actual.cantidad += Number(item?.cantidad || 0);
+      actual.precioTotal += Number(item?.precioTotal || 0);
+      actual.descuento = round2(Number(actual.descuento || 0) + Number(item?.descuento || 0));
+    }
+
+    return Array.from(mapa.values()).map((item, idx) => ({
+      ...item,
+      codigoPrincipal: item.codigoPrincipal || String(idx + 1).padStart(3, "0"),
+      cantidad: round2(item.cantidad),
+      precioTotal: round2(item.precioTotal),
+      descuento: round2(Number(item.descuento || 0)),
+      detalleAdicional: item.detalleAdicional || "",
+    }));
+  };
+
   const splitAuthorization = (value?: string | null) => {
     const raw = safe(value).replace(/\s+/g, "");
     if (!raw) return { line1: "—", line2: "" };
@@ -894,7 +1022,7 @@ async function generarRidePdf(params: {
 
   const logo = await embedLogoFromValue(params.logo);
   const barcode = await barcodeImage(params.claveAcceso);
-
+  const detallesAgrupados = agruparDetallesRide(params.detalles || []);
   // ===== HEADER =====
   box(0, pageH - 140, pageW, 140, { fill: cSoft, border: cSoft, radius: 0 });
 
@@ -1101,7 +1229,7 @@ async function generarRidePdf(params: {
   y -= headerH + 6;
 
   let zebra = false;
-  for (const item of params.detalles) {
+  for (const item of detallesAgrupados) {
     const desc = [safe(item.descripcion), safe(item.detalleAdicional)].filter(Boolean).join(" — ");
     const descLines = wrapText(desc || "Item", descW - 24, 9);
     const rowH = Math.max(24, 16 + descLines.length * 11);
@@ -1516,7 +1644,7 @@ Deno.serve(async (req) => {
       };
     });
 
-    const detalles = agruparDetallesExamenes(detallesBase);
+    const detalles = agruparDetallesFactura(detallesBase);
 
     const subtotalSinImpuestos = round2(
       detalles.reduce((acc, d) => acc + d.precioTotalSinImpuesto, 0),

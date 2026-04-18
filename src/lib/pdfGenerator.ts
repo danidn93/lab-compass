@@ -332,7 +332,7 @@ function addResultsPageScaffold(
   doc.setTextColor(70, 70, 70);
   doc.setFont("times", "bold");
   doc.setFontSize(18);
-  doc.text(buildPrintableExamTitle(testName), 105, 95, { align: "center" });
+  doc.text(testName, 105, 95, { align: "center" });
 }
 
 function ensureSpaceForNextBlock(
@@ -505,12 +505,6 @@ function drawSignatureBlock(doc: jsPDF, config: PdfLabConfig) {
       // ignorar
     }
   }
-}
-
-function buildPrintableExamTitle(testName: string) {
-  const clean = safeText(testName).toUpperCase();
-  if (clean.startsWith("EXAMEN ")) return clean;
-  return `EXAMEN ${clean}`;
 }
 
 export function downloadBlob(blob: Blob, filename: string) {

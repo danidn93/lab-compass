@@ -150,7 +150,7 @@ function groupPdfResultsByTestName(
   const groupedMap: Record<string, any> = {};
 
   resultados.forEach((res: any) => {
-    const testName = String(res?.pruebas?.name || 'Examen').trim();
+    const testName = String(res?.pruebas?.name || '').trim();
     const key = normalizeExamName(testName);
 
     if (!groupedMap[key]) {
