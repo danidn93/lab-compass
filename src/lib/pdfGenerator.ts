@@ -62,6 +62,7 @@ export interface PdfOrderResult {
   testId: string;
   testName: string;
   testDescription?: string;
+  visible_description?: boolean | null;
   notes?: string;
   date?: string | null;
   details: PdfResultRenderItem[];
@@ -71,6 +72,7 @@ export type PdfOrderTest = {
   id: string;
   name: string;
   description?: string | null;
+  visible_description?: boolean | null;
 };
 
 const PAGE = {
@@ -388,13 +390,19 @@ function estimateStructuredDetailsTotalHeight(
   }, 0);
 }
 
-function getTestTitleBlockMetrics(doc: jsPDF, testName: string, testDescription?: string | null) {
+function getTestTitleBlockMetrics(
+  doc: jsPDF,
+  testName: string,
+  testDescription?: string | null,
+  visibleDescription?: boolean | null
+) {
   const nameLines = doc.splitTextToSize(safeText(testName) || "PRUEBA", 150);
-  const descriptionText = safeText(testDescription);
+
+  const descriptionText = visibleDescription ? safeText(testDescription) : "";
   const descriptionLines = descriptionText ? doc.splitTextToSize(descriptionText, 150) : [];
 
   const nameHeight = Math.max(1, nameLines.length) * 7;
-  const descriptionHeight = descriptionLines.length > 0 ? descriptionLines.length * 4.5 + 2 : 0;
+  const descriptionHeight = descriptionLines.length > 0 ? Math.max(1, descriptionLines.length) * 7 + 1 : 0;
 
   return {
     nameLines,
@@ -430,10 +438,17 @@ function getCenteredBlockLayout(
   doc: jsPDF,
   testName: string,
   testDescription: string | null | undefined,
+  visibleDescription: boolean | null | undefined,
   notes: string,
   details: PdfResultRenderItem[]
 ) {
-  const titleMetrics = getTestTitleBlockMetrics(doc, testName, testDescription || "");
+  const titleMetrics = getTestTitleBlockMetrics(
+    doc,
+    testName,
+    testDescription || "",
+    visibleDescription
+  );
+
   const contentHeight = getContentHeight(doc, notes, details);
 
   const totalBlockHeight = titleMetrics.height + PAGE.titleContentGap + contentHeight;
@@ -472,9 +487,16 @@ function drawTitleBlockAt(
   doc: jsPDF,
   testName: string,
   testDescription: string | null | undefined,
-  yTop: number
+  yTop: number,
+  visibleDescription?: boolean | null
 ) {
-  const titleMetrics = getTestTitleBlockMetrics(doc, testName, testDescription || "");
+  const titleMetrics = getTestTitleBlockMetrics(
+    doc,
+    testName,
+    testDescription || "",
+    visibleDescription
+  );
+
   const nameBaselineY = yTop + 7;
 
   doc.setTextColor(70, 70, 70);
@@ -484,8 +506,9 @@ function drawTitleBlockAt(
 
   if (titleMetrics.descriptionLines.length > 0) {
     const descriptionBaselineY = nameBaselineY + titleMetrics.nameHeight;
+
     doc.setFont("times", "normal");
-    doc.setFontSize(10);
+    doc.setFontSize(18);
     doc.setTextColor(95, 95, 95);
     doc.text(titleMetrics.descriptionLines, 105, descriptionBaselineY, { align: "center" });
   }
@@ -520,13 +543,19 @@ function getDividerBlockMetrics(doc: jsPDF, dividerText: string) {
 function getContinuationPageContentStart(
   doc: jsPDF,
   testName: string,
-  testDescription?: string | null
+  testDescription?: string | null,
+  visibleDescription?: boolean | null
 ) {
   const bounds = getFrameUsableBounds();
-  const titleMetrics = getTestTitleBlockMetrics(doc, testName, testDescription || "");
+  const titleMetrics = getTestTitleBlockMetrics(
+    doc,
+    testName,
+    testDescription || "",
+    visibleDescription
+  );
   const titleTop = bounds.top;
 
-  drawTitleBlockAt(doc, testName, testDescription || "", titleTop);
+  drawTitleBlockAt(doc, testName, testDescription || "", titleTop, visibleDescription);
 
   return titleTop + titleMetrics.height + PAGE.titleContentGap;
 }
@@ -538,7 +567,8 @@ function ensureSpaceForNextBlock(
   config: PdfLabConfig,
   patient: PdfPatient,
   testName: string,
-  testDescription?: string | null
+  testDescription?: string | null,
+  visibleDescription?: boolean | null
 ) {
   const bounds = getFrameUsableBounds();
 
@@ -550,7 +580,12 @@ function ensureSpaceForNextBlock(
   addResultsPageScaffold(doc, config, patient);
 
   return {
-    y: getContinuationPageContentStart(doc, testName, testDescription),
+    y: getContinuationPageContentStart(
+      doc,
+      testName,
+      testDescription,
+      visibleDescription
+    ),
     pageBreak: true,
   };
 }
@@ -562,7 +597,8 @@ function drawNotesWithPagination(
   config: PdfLabConfig,
   patient: PdfPatient,
   testName: string,
-  testDescription?: string | null
+  testDescription?: string | null,
+  visibleDescription?: boolean | null
 ) {
   const lines = safeText(notes)
     .split(/\r?\n/)
@@ -580,7 +616,8 @@ function drawNotesWithPagination(
       config,
       patient,
       testName,
-      testDescription
+      testDescription,
+      visibleDescription
     );
     y = check.y;
 
@@ -614,7 +651,8 @@ function drawStructuredDetailsWithPagination(
   config: PdfLabConfig,
   patient: PdfPatient,
   testName: string,
-  testDescription?: string | null
+  testDescription?: string | null,
+  visibleDescription?: boolean | null
 ) {
   let y = startY;
 
@@ -630,7 +668,8 @@ function drawStructuredDetailsWithPagination(
         config,
         patient,
         testName,
-        testDescription
+        testDescription,
+        visibleDescription
       );
 
       y = check.y;
@@ -788,6 +827,7 @@ export function generateResultsPDF(
       doc,
       test.name,
       test.description || "",
+      test.visible_description ?? true,
       result.notes || "",
       result.details || []
     );
@@ -796,7 +836,8 @@ export function generateResultsPDF(
       doc,
       test.name,
       test.description || "",
-      layout.titleTop
+      layout.titleTop,
+      test.visible_description ?? true
     );
 
     const hasNotes = !!safeText(result.notes);
@@ -812,7 +853,8 @@ export function generateResultsPDF(
         config,
         patient,
         test.name,
-        test.description || ""
+        test.description || "",
+        test.visible_description ?? true
       );
     }
 
@@ -824,7 +866,8 @@ export function generateResultsPDF(
         config,
         patient,
         test.name,
-        test.description || ""
+        test.description || "",
+        test.visible_description ?? true
       );
     }
 

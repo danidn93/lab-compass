@@ -150,7 +150,7 @@ export default function TestsPage() {
   const [viewTest, setViewTest] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-
+  const [visibleDescription, setVisibleDescription] = useState(true);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [price, setPrice] = useState('');
@@ -160,6 +160,8 @@ export default function TestsPage() {
   const [openParamId, setOpenParamId] = useState<string | null>(null);
   const [draggedItemId, setDraggedItemId] = useState<string | null>(null);
   const [testReagents, setTestReagents] = useState<ReagentForm[]>([]);
+
+  const [saving, setSaving] = useState(false);
 
   const filtered = tests.filter(t => t.name.toLowerCase().includes(search.toLowerCase()));
   const selectedTest = tests.find(t => t.id === viewTest);
@@ -208,6 +210,7 @@ export default function TestsPage() {
     setPrice('');
     setPorcentajeIva('15');
     setObjetoImpuesto('2');
+    setVisibleDescription(true);
     setStructureItems([firstItem]);
     setOpenParamId(firstItem.id);
     setDraggedItemId(null);
@@ -227,6 +230,7 @@ export default function TestsPage() {
     setPrice(String(test.price ?? ''));
     setPorcentajeIva(String(test.porcentaje_iva ?? 15));
     setObjetoImpuesto(String(test.objeto_impuesto ?? '2'));
+    setVisibleDescription(test.visible_description ?? true);
 
     const mappedParams: StructureItem[] = (test.parameters || []).map((p: any, index: number) => ({
       id: p.id || crypto.randomUUID(),
@@ -303,8 +307,11 @@ export default function TestsPage() {
 
     setFormOpen(true);
   };
-
+  
   const handleSave = async () => {
+    if (saving) return;
+
+    setSaving(true);
     const parameterItems = structureItems.filter(isParameterItem);
     const dividerItems = structureItems.filter(isDividerItem);
 
@@ -357,6 +364,7 @@ export default function TestsPage() {
           porcentaje_iva: porcentaje,
           codigo_porcentaje_iva: codigoPorcentajeIva,
           objeto_impuesto: objetoImpuesto,
+          visible_description: visibleDescription,
         })
         .select()
         .single();
@@ -481,9 +489,12 @@ export default function TestsPage() {
       fetchData();
     } catch (error: any) {
       toast.error('Error al guardar: ' + error.message);
+    } finally {
+      setSaving(false);
     }
   };
 
+  
   const handleDelete = async (id: string) => {
     if (!confirm('¿Seguro que deseas eliminar esta prueba?')) return;
 
@@ -687,6 +698,7 @@ export default function TestsPage() {
               <TableRow>
                 <TableHead>Nombre</TableHead>
                 <TableHead className="hidden md:table-cell">Descripción</TableHead>
+                <TableHead>Descripción visible</TableHead>
                 <TableHead>Parámetros</TableHead>
                 <TableHead>IVA</TableHead>
                 <TableHead>Precio</TableHead>
@@ -697,16 +709,29 @@ export default function TestsPage() {
               {filtered.map(t => (
                 <TableRow key={t.id}>
                   <TableCell className="font-medium text-slate-800">{t.name}</TableCell>
+
                   <TableCell className="hidden md:table-cell text-muted-foreground text-sm max-w-[200px] truncate">
                     {t.description}
                   </TableCell>
+
+                  <TableCell>
+                    <Badge variant={t.visible_description ? 'default' : 'secondary'}>
+                      {t.visible_description ? 'Sí' : 'No'}
+                    </Badge>
+                  </TableCell>
+
                   <TableCell>
                     <Badge variant="outline">{t.parameters?.length || 0}</Badge>
                   </TableCell>
+
                   <TableCell>
                     <Badge variant="secondary">{Number(t.porcentaje_iva || 0).toFixed(2)}%</Badge>
                   </TableCell>
-                  <TableCell className="font-bold text-primary">${Number(t.price).toFixed(2)}</TableCell>
+
+                  <TableCell className="font-bold text-primary">
+                    ${Number(t.price).toFixed(2)}
+                  </TableCell>
+
                   <TableCell className="text-right">
                     <div className="flex justify-end gap-1">
                       <Button variant="ghost" size="icon" onClick={() => setViewTest(t.id)}>
@@ -715,7 +740,12 @@ export default function TestsPage() {
                       <Button variant="ghost" size="icon" onClick={() => openEdit(t)}>
                         <Pencil className="w-4 h-4" />
                       </Button>
-                      <Button variant="ghost" size="icon" className="text-destructive" onClick={() => handleDelete(t.id)}>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="text-destructive"
+                        onClick={() => handleDelete(t.id)}
+                      >
                         <Trash2 className="w-4 h-4" />
                       </Button>
                     </div>
@@ -742,7 +772,9 @@ export default function TestsPage() {
 
           {selectedTest && (
             <div className="space-y-4">
-              <p className="text-sm text-muted-foreground">{selectedTest.description}</p>
+              {selectedTest.visible_description && selectedTest.description ? (
+                <p className="text-sm text-muted-foreground">{selectedTest.description}</p>
+              ) : null}
 
               <div className="flex flex-wrap gap-2">
                 <Badge variant="outline">IVA {Number(selectedTest.porcentaje_iva || 0).toFixed(2)}%</Badge>
@@ -888,7 +920,21 @@ export default function TestsPage() {
 
             <div>
               <Label className="font-semibold">Descripción Técnica</Label>
-              <Textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Detalles de la prueba..." />
+              <Textarea
+                value={description}
+                onChange={e => setDescription(e.target.value)}
+                placeholder="Detalles de la prueba..."
+              />
+
+              <div className="flex items-center gap-2 mt-3">
+                <Checkbox
+                  checked={visibleDescription}
+                  onCheckedChange={checked => setVisibleDescription(!!checked)}
+                />
+                <Label className="text-sm font-semibold">
+                  Mostrar descripción en resultados / visualización
+                </Label>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -1122,7 +1168,7 @@ export default function TestsPage() {
                         {param.result_type === 'text' && (
                           <div className="mb-4">
                             <Label className="text-xs font-semibold">Valor por defecto</Label>
-                            <Input
+                            <Textarea
                               value={param.default_value}
                               onChange={e => updateParam(item.id, 'default_value', e.target.value)}
                               placeholder="Ej: No se observan alteraciones"
@@ -1358,8 +1404,19 @@ export default function TestsPage() {
               <Button variant="outline" onClick={() => setFormOpen(false)}>
                 Cerrar
               </Button>
-              <Button onClick={handleSave} className="bg-primary px-10">
-                Guardar la Prueba
+              <Button
+                onClick={handleSave}
+                disabled={saving}
+                className="bg-primary px-10"
+              >
+                {saving ? (
+                  <>
+                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                    Guardando...
+                  </>
+                ) : (
+                  'Guardar la Prueba'
+                )}
               </Button>
             </div>
           </div>

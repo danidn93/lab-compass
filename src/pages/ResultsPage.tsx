@@ -191,6 +191,7 @@ function groupTestsByName(details: any[] = []) {
         id: test.id,
         name: test.name,
         description: test.description || '',
+        visible_description: test.visible_description ?? true,
         test_ids: [],
         parametros_prueba: [],
         divisores: [],
@@ -274,6 +275,7 @@ function groupPdfResultsByTestName(
         testId: res.pruebas?.id || res.test_id || res.id,
         testName,
         testDescription,
+        visible_description: res.pruebas?.visible_description ?? true,
         notes: res.notes || res.observacion || res.resultado_texto || '',
         date: res.date || null,
         details: [],
@@ -476,6 +478,7 @@ export default function ResultsPage() {
             id,
             name,
             description,
+            visible_description,
             parametros_prueba (
               id,
               name,
@@ -698,6 +701,7 @@ export default function ResultsPage() {
       id: res.testId,
       name: res.testName,
       description: res.testDescription || '',
+      visible_description: res.visible_description ?? true,
     }));
 
     const orderResults: PdfOrderResult[] = groupedResults.map((res: any) => ({
@@ -705,6 +709,7 @@ export default function ResultsPage() {
       testId: res.testId,
       testName: res.testName,
       testDescription: res.testDescription || '',
+      visible_description: res.visible_description ?? true,
       notes: res.notes || '',
       date: res.date || null,
       details: res.details,
@@ -735,6 +740,7 @@ export default function ResultsPage() {
                 id,
                 name,
                 description,
+                visible_description,
                 parametros_prueba_divisores (
                   id,
                   texto,
@@ -1480,7 +1486,7 @@ export default function ResultsPage() {
                     {test.name}
                   </h3>
 
-                  {test.description?.trim() && (
+                  {test.visible_description && test.description?.trim() && (
                     <p className="mt-1 text-sm text-slate-600">
                       {test.description}
                     </p>
