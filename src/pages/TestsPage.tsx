@@ -150,7 +150,7 @@ export default function TestsPage() {
   const [viewTest, setViewTest] = useState<string | null>(null);
   const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [visibleDescription, setVisibleDescription] = useState(true);
+  const [visibleDescription, setVisibleDescription] = useState(false);
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
   const [price, setPrice] = useState('');
@@ -227,7 +227,7 @@ export default function TestsPage() {
     setPrice('');
     setPorcentajeIva('0');
     setObjetoImpuesto('0');
-    setVisibleDescription(true);
+    setVisibleDescription(false);
     setStructureItems([firstItem]);
     setOpenParamId(firstItem.id);
     setDraggedItemId(null);
