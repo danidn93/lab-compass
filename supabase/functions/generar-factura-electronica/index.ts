@@ -456,6 +456,71 @@ function agruparImpuestosTotales(
   }));
 }
 
+function agruparDetallesExamenes(
+  detalles: Array<{
+    test_id?: string | null;
+    descripcion: string;
+    cantidad: number;
+    precioUnitario: number;
+    precioTotalSinImpuesto: number;
+    baseImponible: number;
+    codigoPorcentaje: string;
+    tarifa: number;
+    valorIva: number;
+  }>,
+) {
+  const mapa = new Map<string, {
+    test_id?: string | null;
+    descripcion: string;
+    cantidad: number;
+    precioTotalSinImpuesto: number;
+    baseImponible: number;
+    codigoPorcentaje: string;
+    tarifa: number;
+    valorIva: number;
+  }>();
+
+  for (const d of detalles || []) {
+    const key = [
+      String(d.test_id || ""),
+      String(d.descripcion || "").trim().toLowerCase(),
+      String(d.codigoPorcentaje || ""),
+      Number(d.tarifa || 0).toFixed(2),
+    ].join("|");
+
+    if (!mapa.has(key)) {
+      mapa.set(key, {
+        test_id: d.test_id || null,
+        descripcion: String(d.descripcion || "Examen de laboratorio").trim(),
+        cantidad: 0,
+        precioTotalSinImpuesto: 0,
+        baseImponible: 0,
+        codigoPorcentaje: String(d.codigoPorcentaje || ""),
+        tarifa: round2(Number(d.tarifa || 0)),
+        valorIva: 0,
+      });
+    }
+
+    const item = mapa.get(key)!;
+    item.cantidad += Number(d.cantidad || 0);
+    item.precioTotalSinImpuesto += Number(d.precioTotalSinImpuesto || 0);
+    item.baseImponible += Number(d.baseImponible || 0);
+    item.valorIva += Number(d.valorIva || 0);
+  }
+
+  return Array.from(mapa.values()).map((item) => ({
+    ...item,
+    cantidad: round2(item.cantidad),
+    precioTotalSinImpuesto: round2(item.precioTotalSinImpuesto),
+    baseImponible: round2(item.baseImponible),
+    valorIva: round2(item.valorIva),
+    precioUnitario:
+      item.cantidad > 0
+        ? round2(item.precioTotalSinImpuesto / item.cantidad)
+        : 0,
+  }));
+}
+
 function buildFacturaXml(params: {
   configFE: any;
   order: any;
@@ -1316,6 +1381,7 @@ Deno.serve(async (req) => {
         price,
         porcentaje_iva,
         codigo_porcentaje_iva,
+        objeto_impuesto,
         subtotal_sin_impuesto,
         valor_iva,
         total_linea,
@@ -1423,8 +1489,8 @@ Deno.serve(async (req) => {
       comprador,
     });
 
-    const detalles = (detallesRaw || []).map((d: any) => {
-      const descripcion = String(d?.pruebas?.name || "Examen de laboratorio");
+    const detallesBase = (detallesRaw || []).map((d: any) => {
+      const descripcion = String(d?.pruebas?.name || "Examen de laboratorio").trim();
       const cantidad = 1;
       const precioUnitario = round2(Number(d.price || d?.pruebas?.price || 0));
       const tarifa = round2(Number(
@@ -1438,6 +1504,7 @@ Deno.serve(async (req) => {
       const precioTotalSinImpuesto = round2(Number(d.subtotal_sin_impuesto ?? precioUnitario));
 
       return {
+        test_id: d?.test_id || null,
         descripcion,
         cantidad,
         precioUnitario,
@@ -1448,6 +1515,8 @@ Deno.serve(async (req) => {
         valorIva,
       };
     });
+
+    const detalles = agruparDetallesExamenes(detallesBase);
 
     const subtotalSinImpuestos = round2(
       detalles.reduce((acc, d) => acc + d.precioTotalSinImpuesto, 0),

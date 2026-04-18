@@ -85,6 +85,133 @@ function round2(value: number): number {
   return Number(value.toFixed(2));
 }
 
+function sortByNameAsc(items: any[] = [], field = 'name') {
+  return [...items].sort((a: any, b: any) =>
+    String(a?.[field] || '').localeCompare(String(b?.[field] || ''), 'es', {
+      sensitivity: 'base',
+    })
+  );
+}
+
+function normalizeExamName(value: any) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function groupTestsByName(details: any[] = []) {
+  const groupedMap: Record<string, any> = {};
+
+  details.forEach((d: any) => {
+    const test = d?.pruebas;
+    if (!test) return;
+
+    const key = normalizeExamName(test.name);
+    if (!key) return;
+
+    if (!groupedMap[key]) {
+      groupedMap[key] = {
+        id: test.id,
+        name: test.name,
+        test_ids: [],
+        parametros_prueba: [],
+      };
+    }
+
+    if (!groupedMap[key].test_ids.includes(test.id)) {
+      groupedMap[key].test_ids.push(test.id);
+    }
+
+    const existingParams = groupedMap[key].parametros_prueba;
+
+    (test.parametros_prueba || []).forEach((param: any) => {
+      if (!existingParams.some((p: any) => p.id === param.id)) {
+        existingParams.push(param);
+      }
+    });
+  });
+
+  return Object.values(groupedMap)
+    .map((test: any) => ({
+      ...test,
+      parametros_prueba: sortByNameAsc(test.parametros_prueba || [], 'name'),
+    }))
+    .sort((a: any, b: any) =>
+      String(a.name || '').localeCompare(String(b.name || ''), 'es', {
+        sensitivity: 'base',
+      })
+    );
+}
+
+function groupPdfResultsByTestName(
+  resultados: any[] = [],
+  getDisplayValue: (det: any) => string,
+  getDisplayUnit: (det: any) => string,
+  getResultType: (det: any) => ResultType
+) {
+  const groupedMap: Record<string, any> = {};
+
+  resultados.forEach((res: any) => {
+    const testName = String(res?.pruebas?.name || 'Examen').trim();
+    const key = normalizeExamName(testName);
+
+    if (!groupedMap[key]) {
+      groupedMap[key] = {
+        id: res.id,
+        testId: res.pruebas?.id || res.test_id || res.id,
+        testName,
+        notes: res.notes || res.observacion || res.resultado_texto || '',
+        date: res.date || null,
+        details: [],
+      };
+    }
+
+    const targetDetails = groupedMap[key].details;
+
+    (res.resultado_detalle || []).forEach((det: any) => {
+      const parameterId = det.parametros_prueba?.id || det.parameter_id || null;
+      const parameterName =
+        det.parametros_prueba?.name || det.name || det.parametro || 'Resultado';
+
+      const alreadyExists = targetDetails.some((d: any) =>
+        parameterId ? d.parameterId === parameterId : d.parameterName === parameterName
+      );
+
+      if (!alreadyExists) {
+        targetDetails.push({
+          id: det.id,
+          parameterId,
+          parameterName,
+          value: getDisplayValue(det),
+          appliedRangeMin: det.applied_range_min ?? null,
+          appliedRangeMax: det.applied_range_max ?? null,
+          unit: getDisplayUnit(det),
+          status: det.status || 'normal',
+          observation: det.observation || '',
+          resultType: getResultType(det),
+        });
+      }
+    });
+
+    if (!groupedMap[key].date && res.date) {
+      groupedMap[key].date = res.date;
+    }
+
+    if (!groupedMap[key].notes && (res.notes || res.observacion || res.resultado_texto)) {
+      groupedMap[key].notes = res.notes || res.observacion || res.resultado_texto || '';
+    }
+  });
+
+  return Object.values(groupedMap)
+    .map((group: any) => ({
+      ...group,
+      details: sortByNameAsc(group.details || [], 'parameterName'),
+    }))
+    .sort((a: any, b: any) =>
+      String(a.testName || '').localeCompare(String(b.testName || ''), 'es', {
+        sensitivity: 'base',
+      })
+    );
+}
+
 export default function ResultsPage() {
   const [orders, setOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
@@ -202,12 +329,7 @@ export default function ResultsPage() {
 
       if (error) throw error;
 
-      const normalizedTests = (details || []).map((d: any) => ({
-        ...d.pruebas,
-        parametros_prueba: [...(d.pruebas?.parametros_prueba || [])].sort(
-          (a: any, b: any) => Number(a.sort_order ?? 0) - Number(b.sort_order ?? 0)
-        ),
-      }));
+      const normalizedTests = groupTestsByName(details || []);
 
       const initialValues: Record<string, EntryValueItem> = {};
       normalizedTests.forEach((test: any) => {
@@ -351,7 +473,7 @@ export default function ResultsPage() {
     return true;
   };
 
-    const buildPdfPayloadFromOrderData = (configData: any, orderData: any) => {
+  const buildPdfPayloadFromOrderData = (configData: any, orderData: any) => {
     const pdfConfig: PdfLabConfig = {
       name: configData.name || 'LABORATORIO CLÍNICO',
       owner: configData.owner || '',
@@ -385,34 +507,26 @@ export default function ResultsPage() {
       created_at: firstResultDate || orderData.created_at || null,
     };
 
-    const orderTests =
-      orderData.resultados?.map((res: any) => ({
-        id: res.pruebas?.id || res.test_id || res.id,
-        name: res.pruebas?.name || 'Examen',
-      })) || [];
+    const groupedResults = groupPdfResultsByTestName(
+      orderData.resultados || [],
+      getDisplayValue,
+      getDisplayUnit,
+      getResultType
+    );
 
-    const orderResults: PdfOrderResult[] =
-      orderData.resultados?.map((res: any) => ({
-        id: res.id,
-        testId: res.pruebas?.id || res.test_id || res.id,
-        testName: res.pruebas?.name || 'Examen',
-        notes: res.notes || res.observacion || res.resultado_texto || '',
-        date: res.date || null,
-        details:
-          res.resultado_detalle?.map((det: any) => ({
-            id: det.id,
-            parameterId: det.parametros_prueba?.id || det.parameter_id || null,
-            parameterName:
-              det.parametros_prueba?.name || det.name || det.parametro || 'Resultado',
-            value: getDisplayValue(det),
-            appliedRangeMin: det.applied_range_min ?? null,
-            appliedRangeMax: det.applied_range_max ?? null,
-            unit: getDisplayUnit(det),
-            status: det.status || 'normal',
-            observation: det.observation || '',
-            resultType: getResultType(det),
-          })) || [],
-      })) || [];
+    const orderTests = groupedResults.map((res: any) => ({
+      id: res.testId,
+      name: res.testName,
+    }));
+
+    const orderResults: PdfOrderResult[] = groupedResults.map((res: any) => ({
+      id: res.id,
+      testId: res.testId,
+      testName: res.testName,
+      notes: res.notes || '',
+      date: res.date || null,
+      details: res.details,
+    }));
 
     return { pdfConfig, pdfPatient, pdfOrder, orderTests, orderResults };
   };
@@ -625,20 +739,35 @@ export default function ResultsPage() {
     try {
       setSaving(true);
 
-      for (const test of orderDetails.tests) {
-        const { data: existingResults, error: existingError } = await supabase
-          .from('resultados')
-          .select('id')
-          .eq('order_id', selectedOrderId)
-          .eq('test_id', test.id)
-          .limit(1);
+      const { data: existingOrderResults, error: existingOrderResultsError } = await supabase
+        .from('resultados')
+        .select(`
+          id,
+          test_id,
+          pruebas (
+            id,
+            name
+          )
+        `)
+        .eq('order_id', selectedOrderId);
 
-        if (existingError) throw existingError;
+      if (existingOrderResultsError) throw existingOrderResultsError;
+
+      for (const test of orderDetails.tests) {
+        const groupedNameKey = normalizeExamName(test.name);
+
+        const matchingExistingResults = (existingOrderResults || []).filter((r: any) => {
+          const existingName = normalizeExamName(r?.pruebas?.name);
+          return existingName === groupedNameKey;
+        });
+
+        const primaryExistingResult = matchingExistingResults[0] || null;
+        const duplicateExistingResults = matchingExistingResults.slice(1);
 
         let resultId: string;
 
-        if (existingResults && existingResults.length > 0) {
-          resultId = existingResults[0].id;
+        if (primaryExistingResult) {
+          resultId = primaryExistingResult.id;
 
           const { error: updateResultError } = await supabase
             .from('resultados')
@@ -657,12 +786,17 @@ export default function ResultsPage() {
 
           if (deleteDetailError) throw deleteDetailError;
         } else {
+          const preferredTestId =
+            Array.isArray(test.test_ids) && test.test_ids.length > 0
+              ? test.test_ids[0]
+              : test.id;
+
           const { data: resultDoc, error: resError } = await supabase
             .from('resultados')
             .insert([
               {
                 order_id: selectedOrderId,
-                test_id: test.id,
+                test_id: preferredTestId,
                 date: resultDate,
                 resultados_url: null,
               },
@@ -672,6 +806,22 @@ export default function ResultsPage() {
 
           if (resError) throw resError;
           resultId = resultDoc.id;
+        }
+
+        for (const duplicateResult of duplicateExistingResults) {
+          const { error: deleteDuplicateDetailsError } = await supabase
+            .from('resultado_detalle')
+            .delete()
+            .eq('result_id', duplicateResult.id);
+
+          if (deleteDuplicateDetailsError) throw deleteDuplicateDetailsError;
+
+          const { error: deleteDuplicateResultError } = await supabase
+            .from('resultados')
+            .delete()
+            .eq('id', duplicateResult.id);
+
+          if (deleteDuplicateResultError) throw deleteDuplicateResultError;
         }
 
         const detailsToInsert = (test.parametros_prueba || []).map((param: any) => {

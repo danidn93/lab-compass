@@ -17,6 +17,11 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import {
+  HoverCard,
+  HoverCardContent,
+  HoverCardTrigger,
+} from '@/components/ui/hover-card';
+import {
   Loader2,
   Plus,
   Search,
@@ -260,7 +265,14 @@ export default function OrdersPage() {
           .from('pruebas')
           .select(`
             *,
-            prueba_reactivos(*)
+            prueba_reactivos(*),
+            parametros_prueba(
+              id,
+              name,
+              unit,
+              result_type,
+              sort_order
+            )
           `)
           .order('name'),
 
@@ -362,6 +374,40 @@ export default function OrdersPage() {
       .filter(Boolean) as any[];
   }, [selectedTests, tests]);
 
+  const selectedTestsSummaryGrouped = useMemo(() => {
+    const mapa = new Map<string, any>();
+
+    for (const test of selectedTestsSummary) {
+      const nombre = String(test?.name || 'Prueba').trim();
+      const key = nombre.toLowerCase();
+
+      if (!mapa.has(key)) {
+        mapa.set(key, {
+          id: key,
+          name: nombre,
+          cantidad: 0,
+          subtotal: 0,
+          valorIva: 0,
+          totalLinea: 0,
+        });
+      }
+
+      const item = mapa.get(key);
+
+      item.cantidad += 1;
+      item.subtotal += safeNumber(test.subtotal, 0);
+      item.valorIva += safeNumber(test.valorIva, 0);
+      item.totalLinea += safeNumber(test.totalLinea, 0);
+    }
+
+    return Array.from(mapa.values()).map((item) => ({
+      ...item,
+      subtotal: round2(item.subtotal),
+      valorIva: round2(item.valorIva),
+      totalLinea: round2(item.totalLinea),
+    }));
+  }, [selectedTestsSummary]);
+
   const resumenTotales = useMemo(() => {
     const subtotal = round2(
       selectedTestsSummary.reduce((acc, t) => acc + safeNumber(t.subtotal), 0)
@@ -373,6 +419,51 @@ export default function OrdersPage() {
 
     return { subtotal, iva, total };
   }, [selectedTestsSummary]);
+
+  const getParametrosPruebaOrdenados = (test: any) => {
+    return [...(test?.parametros_prueba || [])].sort(
+      (a: any, b: any) => safeNumber(a?.sort_order, 0) - safeNumber(b?.sort_order, 0)
+    );
+  };
+
+    const agruparDetallesPorNombre = (detalles: any[]) => {
+    const mapa = new Map<string, any>();
+
+    for (const detalle of detalles || []) {
+      const nombre = String(detalle?.pruebas?.name || 'Prueba').trim();
+      const key = nombre.toLowerCase();
+
+      if (!mapa.has(key)) {
+        mapa.set(key, {
+          nombre,
+          cantidad: 0,
+          subtotal: 0,
+          iva: 0,
+          total: 0,
+        });
+      }
+
+      const item = mapa.get(key);
+
+      item.cantidad += 1;
+      item.subtotal += safeNumber(
+        detalle?.subtotal_sin_impuesto,
+        safeNumber(detalle?.price, 0)
+      );
+      item.iva += safeNumber(detalle?.valor_iva, 0);
+      item.total += safeNumber(
+        detalle?.total_linea,
+        safeNumber(detalle?.price, 0) + safeNumber(detalle?.valor_iva, 0)
+      );
+    }
+
+    return Array.from(mapa.values()).map((item) => ({
+      ...item,
+      subtotal: round2(item.subtotal),
+      iva: round2(item.iva),
+      total: round2(item.total),
+    }));
+  };
 
   const handleClearPatient = () => {
     setSelectedPatient('');
@@ -1089,7 +1180,16 @@ export default function OrdersPage() {
         *,
         pacientes(name, cedula, email),
         doctores(nombre, especialidad),
-        orden_pagos(*)
+        orden_pagos(*),
+        orden_detalle(
+          test_id,
+          price,
+          subtotal_sin_impuesto,
+          valor_iva,
+          total_linea,
+          porcentaje_iva,
+          pruebas(name, price)
+        )
       `)
       .eq('id', orderId)
       .single();
@@ -1519,6 +1619,11 @@ export default function OrdersPage() {
 
     return noEstaPagada && matchesSearch;
   });
+
+  const selectedOrderDetallesAgrupados = useMemo(() => {
+    if (!selectedOrder?.orden_detalle) return [];
+    return agruparDetallesPorNombre(selectedOrder.orden_detalle);
+  }, [selectedOrder]);
 
   if (loading) {
     return (
@@ -2111,49 +2216,102 @@ export default function OrdersPage() {
                   {filteredTestsForPicker.length > 0 ? (
                     filteredTestsForPicker.map((t) => {
                       const isSelected = selectedTests.includes(t.id);
+                      const parametros = getParametrosPruebaOrdenados(t);
 
                       return (
-                        <button
-                          type="button"
-                          key={t.id}
-                          onClick={() => {
-                            setSelectedTests((prev) =>
-                              prev.includes(t.id)
-                                ? prev.filter((id) => id !== t.id)
-                                : [...prev, t.id]
-                            );
-                          }}
-                          className={`w-full rounded-xl border px-4 py-3 text-left transition ${
-                            isSelected
-                              ? 'border-blue-500 bg-blue-50'
-                              : 'border-slate-200 bg-white hover:border-blue-300 hover:bg-blue-50/40'
-                          }`}
-                        >
-                          <div className="flex items-start justify-between gap-4">
-                            <div className="flex items-start gap-3">
-                              <div
-                                className={`mt-1 h-5 w-5 rounded-md border flex items-center justify-center ${
-                                  isSelected
-                                    ? 'border-blue-600 bg-blue-600 text-white'
-                                    : 'border-slate-300 bg-white'
-                                }`}
-                              >
-                                {isSelected && <span className="text-xs">✓</span>}
-                              </div>
+                        <HoverCard key={t.id} openDelay={120} closeDelay={80}>
+                          <HoverCardTrigger asChild>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setSelectedTests((prev) =>
+                                  prev.includes(t.id)
+                                    ? prev.filter((id) => id !== t.id)
+                                    : [...prev, t.id]
+                                );
+                              }}
+                              className={`w-full rounded-xl border px-4 py-3 text-left transition ${
+                                isSelected
+                                  ? 'border-blue-500 bg-blue-50'
+                                  : 'border-slate-200 bg-white hover:border-blue-300 hover:bg-blue-50/40'
+                              }`}
+                            >
+                              <div className="flex items-start justify-between gap-4">
+                                <div className="flex items-start gap-3">
+                                  <div
+                                    className={`mt-1 h-5 w-5 rounded-md border flex items-center justify-center ${
+                                      isSelected
+                                        ? 'border-blue-600 bg-blue-600 text-white'
+                                        : 'border-slate-300 bg-white'
+                                    }`}
+                                  >
+                                    {isSelected && <span className="text-xs">✓</span>}
+                                  </div>
 
-                              <div>
-                                <div className="font-semibold text-slate-800">{t.name}</div>
-                                <div className="text-sm text-slate-500">
-                                  IVA {Number(t.porcentaje_iva || 0).toFixed(2)}%
+                                  <div>
+                                    <div className="font-semibold text-slate-800">{t.name}</div>
+
+                                    <div className="text-sm text-slate-500">
+                                      IVA {Number(t.porcentaje_iva || 0).toFixed(2)}%
+                                    </div>
+
+                                    <div className="mt-1 text-xs text-slate-400">
+                                      {parametros.length > 0
+                                        ? `${parametros.length} parámetro${parametros.length === 1 ? '' : 's'}`
+                                        : 'Sin parámetros configurados'}
+                                    </div>
+                                  </div>
+                                </div>
+
+                                <div className="text-sm font-bold text-slate-700">
+                                  ${Number(t.price || 0).toFixed(2)}
                                 </div>
                               </div>
-                            </div>
+                            </button>
+                          </HoverCardTrigger>
 
-                            <div className="text-sm font-bold text-slate-700">
-                              ${Number(t.price || 0).toFixed(2)}
+                          <HoverCardContent className="w-[340px] rounded-2xl border-slate-200 p-4 shadow-xl">
+                            <div className="space-y-3">
+                              <div>
+                                <div className="font-semibold text-slate-800">{t.name}</div>
+                                <div className="text-xs text-slate-500">
+                                  Parámetros configurados para esta prueba
+                                </div>
+                              </div>
+
+                              {parametros.length > 0 ? (
+                                <div className="max-h-64 overflow-y-auto space-y-2">
+                                  {parametros.map((param: any, index: number) => (
+                                    <div
+                                      key={param.id}
+                                      className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2"
+                                    >
+                                      <div className="text-sm font-medium text-slate-800">
+                                        {index + 1}. {param.name}
+                                      </div>
+
+                                      <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
+                                        <span className="rounded-full bg-white px-2 py-0.5 border">
+                                          Tipo: {param.result_type || '—'}
+                                        </span>
+
+                                        {param.unit && (
+                                          <span className="rounded-full bg-white px-2 py-0.5 border">
+                                            Unidad: {param.unit}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </div>
+                                  ))}
+                                </div>
+                              ) : (
+                                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-sm text-slate-500">
+                                  Esta prueba no tiene parámetros registrados.
+                                </div>
+                              )}
                             </div>
-                          </div>
-                        </button>
+                          </HoverCardContent>
+                        </HoverCard>
                       );
                     })
                   ) : (
@@ -2176,11 +2334,14 @@ export default function OrdersPage() {
                   </div>
 
                   <div className="space-y-1">
-                    {selectedTestsSummary.map((t) => (
+                    {selectedTestsSummaryGrouped.map((t) => (
                       <div key={t.id} className="flex items-center justify-between text-sm">
-                        <span>{t.name}</span>
                         <span>
-                          ${Number(t.price).toFixed(2)} + IVA ${Number(t.valorIva).toFixed(2)}
+                          {t.name}
+                          
+                        </span>
+                        <span>
+                          ${Number(t.subtotal).toFixed(2)} + IVA ${Number(t.valorIva).toFixed(2)}
                         </span>
                       </div>
                     ))}
