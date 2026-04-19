@@ -59,6 +59,111 @@ function obtenerCodigoPorcentajeIva(porcentaje: number): string {
   throw new Error(`Tarifa IVA no soportada: ${p}%`);
 }
 
+function normalizeExamName(value: any) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function normalizeExamDescription(
+  description: any,
+  visibleDescription: boolean | null | undefined
+) {
+  if (visibleDescription === false) return '';
+  return String(description || '').trim().toLowerCase();
+}
+
+function buildGroupedTestKey(
+  name: any,
+  description: any,
+  visibleDescription: boolean | null | undefined
+) {
+  return `${normalizeExamName(name)}|||${normalizeExamDescription(
+    description,
+    visibleDescription
+  )}`;
+}
+
+function getSortedParameterNamesFromTest(test: any) {
+  return [...(test?.parametros_prueba || [])]
+    .map((p: any) => String(p?.name || '').trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b, 'es', { sensitivity: 'base' }));
+}
+
+function buildVariantLabelFromTest(test: any, showParameters: boolean) {
+  const visibleDescription = test?.visible_description ?? true;
+  const description = visibleDescription
+    ? String(test?.description || '').trim()
+    : '';
+
+  const parameterNames = getSortedParameterNamesFromTest(test);
+
+  if (showParameters && parameterNames.length > 0) {
+    return parameterNames.join(', ');
+  }
+
+  if (description) {
+    return description;
+  }
+
+  return '';
+}
+
+function groupOrderDetailsForTicket(detalles: any[] = []) {
+  const groupedMap: Record<string, any> = {};
+
+  for (const detalle of detalles) {
+    const prueba = detalle?.pruebas || {};
+    const visibleDescription = prueba?.visible_description ?? true;
+
+    const key = buildGroupedTestKey(
+      prueba?.name,
+      prueba?.description,
+      visibleDescription
+    );
+
+    if (!groupedMap[key]) {
+      groupedMap[key] = {
+        name: String(prueba?.name || 'Prueba'),
+        description: visibleDescription ? String(prueba?.description || '') : '',
+        visible_description: visibleDescription,
+        items: [],
+      };
+    }
+
+    groupedMap[key].items.push(detalle);
+  }
+
+  return Object.values(groupedMap)
+    .map((group: any) => {
+      const isGrouped = group.items.length > 1;
+
+      const items = [...group.items].sort((a: any, b: any) => {
+        const aLabel = buildVariantLabelFromTest(a?.pruebas || {}, isGrouped);
+        const bLabel = buildVariantLabelFromTest(b?.pruebas || {}, isGrouped);
+
+        return aLabel.localeCompare(bLabel, 'es', { sensitivity: 'base' });
+      });
+
+      return {
+        ...group,
+        items,
+      };
+    })
+    .sort((a: any, b: any) => {
+      const byName = String(a.name || '').localeCompare(String(b.name || ''), 'es', {
+        sensitivity: 'base',
+      });
+
+      if (byName !== 0) return byName;
+
+      return String(a.description || '').localeCompare(
+        String(b.description || ''),
+        'es',
+        { sensitivity: 'base' }
+      );
+    });
+}
+
 type LabConfig = {
   id?: string;
   logo?: string | null;
@@ -1684,7 +1789,16 @@ export default function OrdersPage() {
           porcentaje_iva,
           valor_iva,
           total_linea,
-          pruebas(name, price)
+          pruebas(
+            name,
+            price,
+            description,
+            visible_description,
+            parametros_prueba(
+              id,
+              name
+            )
+          )
         )
       `)
       .eq('id', orderId)
@@ -1710,6 +1824,7 @@ export default function OrdersPage() {
     const pagado = round2(safeNumber(order.paid_amount, 0));
     const saldo = round2(Math.max(total - pagado, 0));
 
+    const detallesAgrupadosTicket = groupOrderDetailsForTicket(order.orden_detalle || []);
     const portalUrl = `${window.location.origin}/portal?clave=${order.access_key}`;
 
     const qrDataUrl = await QRCode.toDataURL(portalUrl, {
@@ -1855,16 +1970,28 @@ export default function OrdersPage() {
 
           <div class="bold">PRUEBAS:</div>
 
-          ${(order.orden_detalle || [])
-            .map(
-              (d: any) => `
-                <div class="test-row">
-                  <span class="test-name">- ${d.pruebas?.name || 'Prueba'}</span>
-                  <span class="test-price">$${Number(d.price || 0).toFixed(2)}</span>
-                </div>
-              `
-            )
-            .join('')}
+            ${detallesAgrupadosTicket
+              .map((grupo: any) => {
+                const isGrouped = grupo.items.length > 1;
+
+                return grupo.items
+                  .map((detalle: any) => {
+                    const prueba = detalle?.pruebas || {};
+                    const variantLabel = buildVariantLabelFromTest(prueba, isGrouped);
+                    const testName = String(prueba?.name || 'Prueba').trim();
+
+                    const labelToShow = variantLabel.trim() || testName;
+
+                    return `
+                      <div class="test-row">
+                        <span class="test-name">- ${labelToShow}</span>
+                        <span class="test-price">$${Number(detalle.price || 0).toFixed(2)}</span>
+                      </div>
+                    `;
+                  })
+                  .join('');
+              })
+              .join('')}
 
           <div class="line"></div>
 
