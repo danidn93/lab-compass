@@ -13,6 +13,7 @@ import {
   UserCog,
   Stethoscope,
   FolderKanban,
+  FlaskConical
 } from 'lucide-react';
 import {
   Sidebar,
@@ -31,6 +32,7 @@ const navItems = [
   { title: 'Dashboard', url: '/admin', icon: LayoutDashboard },
   { title: 'Inventario', url: '/admin/inventory', icon: Package },
   { title: 'Pruebas', url: '/admin/tests', icon: TestTubes },
+  { title: 'Grupos de Exámenes', url: '/admin/exam-groups', icon: FlaskConical },
   { title: 'Pacientes', url: '/admin/patients', icon: Users },
   { title: 'Médicos', url: '/admin/doctores', icon: Stethoscope },
   { title: 'Órdenes', url: '/admin/orders', icon: ClipboardList },
