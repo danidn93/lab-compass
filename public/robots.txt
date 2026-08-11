@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://laboratorio-clinico-central.onrender.com/sitemap.xml

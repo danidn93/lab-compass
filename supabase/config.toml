@@ -1,0 +1,2 @@
+[functions.xades-signer]
+verify_jwt = false
