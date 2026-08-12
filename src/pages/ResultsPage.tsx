@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { ReactNode, useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -18,8 +18,30 @@ import {
   ChevronDown,
   ChevronUp,
   MessageCircle,
+  GripVertical,
+  Layers3,
+  FileStack,
 } from 'lucide-react';
 import { toast } from 'sonner';
+
+import {
+  DndContext,
+  DragEndEvent,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
+
 import { Textarea } from '@/components/ui/textarea';
 import {
   Select,
@@ -39,6 +61,76 @@ import {
 
 type ResultStatus = 'normal' | 'high' | 'low' | 'positive' | 'negative' | 'text' | null;
 type ResultType = 'numeric' | 'boolean' | 'text';
+
+
+type PdfLayoutItem = {
+  id: string;
+  itemType: 'parameter' | 'divider';
+  order: number;
+};
+
+type PdfTestLayout = {
+  key: string;
+  testId: string;
+  order: number;
+  included: boolean;
+  pageGroup: string | null;
+  items: PdfLayoutItem[];
+};
+
+type PdfLayoutConfig = {
+  version: 1;
+  tests: PdfTestLayout[];
+};
+
+const PDF_PAGE_GROUPS = Array.from({ length: 12 }, (_, index) => String(index + 1));
+
+function getStructureItemLayoutId(item: any): string {
+  if (item?.item_type === 'parameter') return String(item?.parameter?.id || item?.id || '');
+  return String(item?.id || '');
+}
+
+function getPdfDetailLayoutId(item: any): string {
+  if (item?.item_type === 'divider') {
+    return String(item?.id || '').replace(/^divider-/, '');
+  }
+  return String(item?.parameterId || item?.id || '');
+}
+
+function SortableShell({
+  id,
+  children,
+  disabled = false,
+  className = '',
+}: {
+  id: string;
+  children: (handleProps: any, dragging: boolean) => ReactNode;
+  disabled?: boolean;
+  className?: string;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id, disabled });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 50 : undefined,
+    opacity: isDragging ? 0.72 : 1,
+    position: 'relative',
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} className={className}>
+      {children({ ...attributes, ...listeners }, isDragging)}
+    </div>
+  );
+}
 
 interface DividerDisplayItem {
   id: string;
@@ -253,6 +345,7 @@ function groupTestsByName(details: any[] = []) {
 
       groupedMap[key] = {
         id: test.id,
+        layoutKey: key,
         name: test.name,
         description: visibleDescription ? test.description || '' : '',
         visible_description: visibleDescription,
@@ -356,6 +449,7 @@ function groupPdfResultsByTestName(
     if (!groupedMap[key]) {
       groupedMap[key] = {
         id: res.id,
+        layoutKey: key,
         testId: res.pruebas?.id || res.test_id || res.id,
         testName,
         testDescription: visibleDescription ? testDescription : '',
@@ -497,19 +591,6 @@ function groupPdfResultsByTestName(
       );
 
       return hasNotes || hasParameterDetails;
-    })
-    .sort((a: any, b: any) => {
-      const byName = String(a.testName || '').localeCompare(String(b.testName || ''), 'es', {
-        sensitivity: 'base',
-      });
-
-      if (byName !== 0) return byName;
-
-      return String(a.testDescription || '').localeCompare(
-        String(b.testDescription || ''),
-        'es',
-        { sensitivity: 'base' }
-      );
     });
 }
 
@@ -526,6 +607,12 @@ export default function ResultsPage() {
 
   const [search, setSearch] = useState('');
   const [historyOpen, setHistoryOpen] = useState(false);
+
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
 
   useEffect(() => {
     fetchOrders();
@@ -598,6 +685,122 @@ export default function ResultsPage() {
     return orderDate >= sevenDaysAgo;
   };
 
+
+  const buildPdfLayoutFromTests = (tests: any[] = []): PdfLayoutConfig => ({
+    version: 1,
+    tests: tests.map((test: any, testIndex: number) => ({
+      key: String(test.layoutKey || buildGroupedTestKey(test.name, test.description, test.visible_description)),
+      testId: String(test.id || ''),
+      order: testIndex,
+      included: test.pdf_included !== false,
+      pageGroup: test.pdf_page_group || null,
+      items: (test.structure_items || []).map((item: any, itemIndex: number) => ({
+        id: getStructureItemLayoutId(item),
+        itemType: item.item_type,
+        order: itemIndex,
+      })),
+    })),
+  });
+
+  const applySavedPdfLayoutToTests = (tests: any[] = [], savedLayout: any): any[] => {
+    const layoutTests: PdfTestLayout[] = Array.isArray(savedLayout?.tests) ? savedLayout.tests : [];
+    if (!layoutTests.length) {
+      return tests.map((test: any) => ({
+        ...test,
+        pdf_included: true,
+        pdf_page_group: null,
+      }));
+    }
+
+    const byKey = new Map(layoutTests.map((item) => [item.key, item]));
+
+    return tests
+      .map((test: any, originalIndex: number) => {
+        const key = String(
+          test.layoutKey || buildGroupedTestKey(test.name, test.description, test.visible_description)
+        );
+        const saved = byKey.get(key);
+
+        let structureItems = [...(test.structure_items || [])];
+        if (saved?.items?.length) {
+          const itemOrder = new Map(saved.items.map((item) => [item.id, item.order]));
+          structureItems.sort((a: any, b: any) => {
+            const ao = itemOrder.get(getStructureItemLayoutId(a));
+            const bo = itemOrder.get(getStructureItemLayoutId(b));
+            return (ao ?? Number.MAX_SAFE_INTEGER) - (bo ?? Number.MAX_SAFE_INTEGER);
+          });
+        }
+
+        return {
+          ...test,
+          layoutKey: key,
+          structure_items: structureItems,
+          pdf_included: saved ? saved.included !== false : true,
+          pdf_page_group: saved?.pageGroup || null,
+          _pdf_order: saved?.order ?? originalIndex,
+        };
+      })
+      .sort((a: any, b: any) => a._pdf_order - b._pdf_order);
+  };
+
+  const updateTestPdfOption = (layoutKey: string, patch: Record<string, any>) => {
+    setOrderDetails((prev: any) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        tests: (prev.tests || []).map((test: any) =>
+          String(test.layoutKey) === String(layoutKey) ? { ...test, ...patch } : test
+        ),
+      };
+    });
+  };
+
+  const handlePdfDragEnd = (event: DragEndEvent) => {
+    const activeId = String(event.active.id);
+    const overId = event.over ? String(event.over.id) : '';
+    if (!overId || activeId === overId) return;
+
+    setOrderDetails((prev: any) => {
+      if (!prev) return prev;
+      const tests = [...(prev.tests || [])];
+
+      if (activeId.startsWith('test:') && overId.startsWith('test:')) {
+        const activeKey = activeId.slice(5);
+        const overKey = overId.slice(5);
+        const oldIndex = tests.findIndex((test: any) => String(test.layoutKey) === activeKey);
+        const newIndex = tests.findIndex((test: any) => String(test.layoutKey) === overKey);
+        if (oldIndex < 0 || newIndex < 0) return prev;
+        return { ...prev, tests: arrayMove(tests, oldIndex, newIndex) };
+      }
+
+      if (activeId.startsWith('item:') && overId.startsWith('item:')) {
+        const activeParts = activeId.split('::');
+        const overParts = overId.split('::');
+        if (activeParts.length !== 2 || overParts.length !== 2) return prev;
+
+        const activeTestKey = activeParts[0].replace(/^item:/, '');
+        const overTestKey = overParts[0].replace(/^item:/, '');
+        if (activeTestKey !== overTestKey) return prev;
+
+        const activeItemId = activeParts[1];
+        const overItemId = overParts[1];
+        const testIndex = tests.findIndex((test: any) => String(test.layoutKey) === activeTestKey);
+        if (testIndex < 0) return prev;
+
+        const test = tests[testIndex];
+        const items = [...(test.structure_items || [])];
+        const oldIndex = items.findIndex((item: any) => getStructureItemLayoutId(item) === activeItemId);
+        const newIndex = items.findIndex((item: any) => getStructureItemLayoutId(item) === overItemId);
+        if (oldIndex < 0 || newIndex < 0) return prev;
+
+        tests[testIndex] = { ...test, structure_items: arrayMove(items, oldIndex, newIndex) };
+        return { ...prev, tests };
+      }
+
+      return prev;
+    });
+  };
+
   const openEntry = async (order: any) => {
     try {
       setSelectedOrderId(order.id);
@@ -640,7 +843,10 @@ export default function ResultsPage() {
 
       if (error) throw error;
 
-      const normalizedTests = groupTestsByName(details || []);
+      const normalizedTests = applySavedPdfLayoutToTests(
+        groupTestsByName(details || []),
+        order.pdf_layout
+      );
 
       const initialValues: Record<string, EntryValueItem> = {};
       normalizedTests.forEach((test: any) => {
@@ -788,18 +994,46 @@ export default function ResultsPage() {
       created_at: firstResultDate || orderData.created_at || null,
     };
 
-    const groupedResults = groupPdfResultsByTestName(
+    const rawGroupedResults = groupPdfResultsByTestName(
       orderData.resultados || [],
       getDisplayValue,
       getDisplayUnit,
       getResultType
     );
 
+    const savedLayout: PdfLayoutConfig | null = orderData.pdf_layout || null;
+    const savedTests = Array.isArray(savedLayout?.tests) ? savedLayout!.tests : [];
+    const savedByKey = new Map(savedTests.map((item) => [item.key, item]));
+
+    const groupedResults = rawGroupedResults
+      .filter((res: any) => savedByKey.get(res.layoutKey)?.included !== false)
+      .map((res: any, originalIndex: number) => {
+        const layoutTest = savedByKey.get(res.layoutKey);
+        const itemOrder = new Map(
+          (layoutTest?.items || []).map((item: PdfLayoutItem) => [item.id, item.order])
+        );
+        const details = [...(res.details || [])].sort((a: any, b: any) => {
+          const ao = itemOrder.get(getPdfDetailLayoutId(a));
+          const bo = itemOrder.get(getPdfDetailLayoutId(b));
+          return (ao ?? Number.MAX_SAFE_INTEGER) - (bo ?? Number.MAX_SAFE_INTEGER);
+        });
+
+        return {
+          ...res,
+          details,
+          pdfOrder: layoutTest?.order ?? originalIndex,
+          pageGroup: layoutTest?.pageGroup || null,
+        };
+      })
+      .sort((a: any, b: any) => a.pdfOrder - b.pdfOrder);
+
     const orderTests = groupedResults.map((res: any) => ({
       id: res.testId,
+      layoutKey: res.layoutKey,
       name: res.testName,
       description: res.testDescription || '',
       visible_description: res.visible_description ?? true,
+      pageGroup: res.pageGroup || null,
     }));
 
     const orderResults: PdfOrderResult[] = groupedResults.map((res: any) => ({
@@ -1208,9 +1442,14 @@ export default function ResultsPage() {
         }
       }
 
+      const pdfLayout = buildPdfLayoutFromTests(orderDetails.tests || []);
+
       const { error: updateOrderError } = await supabase
         .from('ordenes')
-        .update({ status: 'completed' })
+        .update({
+          status: 'completed',
+          pdf_layout: pdfLayout,
+        })
         .eq('id', selectedOrderId);
 
       if (updateOrderError) throw updateOrderError;
@@ -1574,7 +1813,7 @@ export default function ResultsPage() {
           }
         }}
       >
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
+        <DialogContent className="max-w-6xl max-h-[92vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle className="font-display text-xl text-primary">
               Ingreso Técnico de Resultados
@@ -1608,168 +1847,320 @@ export default function ResultsPage() {
               </div>
             </div>
 
-            {orderDetails?.tests.map((test: any) => (
-              <div key={test.id} className="space-y-4 border-l-4 border-primary/20 pl-4">
+            <div className="rounded-xl border border-blue-100 bg-blue-50/50 p-4">
+              <div className="flex items-start gap-3">
+                <FileStack className="mt-0.5 h-5 w-5 text-blue-600" />
                 <div>
-                  <h3 className="font-display font-bold text-lg text-slate-800 underline decoration-primary/30 underline-offset-4">
-                    {test.name}
-                  </h3>
-
-                  {test.visible_description && test.description?.trim() && (
-                    <p className="mt-1 text-sm text-slate-600">
-                      {test.description}
-                    </p>
-                  )}
-                </div>
-
-                <div className="space-y-4">
-                  {(test.structure_items || []).map((structureItem: any) => {
-                    if (structureItem.item_type === 'divider') {
-                      return (
-                        <div
-                          key={structureItem.id}
-                          className="rounded-lg border border-primary/20 bg-primary/5 px-4 py-3"
-                        >
-                          <p className="font-display font-bold text-lg text-slate-800 underline decoration-primary/30 underline-offset-4">
-                            {structureItem.texto}
-                          </p>
-                        </div>
-                      );
-                    }
-
-                    const param = structureItem.parameter;
-                    const item = entryValues[param.id] || emptyEntryValue();
-                    const range = getAppliedRange(param, orderDetails.pacientes);
-                    const status = getStatusPreview(param);
-                    const resultType: ResultType = param.result_type || 'numeric';
-
-                    return (
-                      <div
-                        key={param.id}
-                        className="grid grid-cols-12 gap-4 items-start bg-slate-50/50 p-3 rounded-lg border border-slate-100"
-                      >
-                        <div className="col-span-12 md:col-span-4">
-                          <Label className="text-sm font-bold text-slate-700">
-                            {param.name}
-                          </Label>
-
-                          <div className="flex flex-wrap gap-2 text-[10px] font-mono text-slate-500 mt-1">
-                            <span>Tipo: {resultType}</span>
-                            {resultType === 'numeric' && (
-                              <span>Unidad: {param.unit || '—'}</span>
-                            )}
-                            {resultType === 'numeric' && range && (
-                              <span>Ref: [{range.min} - {range.max}]</span>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="col-span-12 md:col-span-5">
-                          {resultType === 'numeric' && (
-                            <Input
-                              type="number"
-                              step="any"
-                              className="bg-white border-slate-200"
-                              placeholder="0.00"
-                              value={item.value_numeric}
-                              onChange={e =>
-                                updateEntryValue(param.id, 'value_numeric', e.target.value)
-                              }
-                            />
-                          )}
-
-                          {resultType === 'boolean' && (
-                            <Select
-                              value={item.value_boolean}
-                              onValueChange={value =>
-                                updateEntryValue(
-                                  param.id,
-                                  'value_boolean',
-                                  value as '' | 'true' | 'false'
-                                )
-                              }
-                            >
-                              <SelectTrigger className="bg-white">
-                                <SelectValue placeholder="Seleccione un valor" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                <SelectItem value="true">
-                                  {param.bool_true_label || 'Positivo'}
-                                </SelectItem>
-                                <SelectItem value="false">
-                                  {param.bool_false_label || 'Negativo'}
-                                </SelectItem>
-                              </SelectContent>
-                            </Select>
-                          )}
-
-                          {resultType === 'text' && (
-                            <>
-                              <Textarea
-                                className="bg-white border-slate-200 min-h-[90px]"
-                                placeholder={param.valor_default ? 'Valor precargado editable...' : 'Ingrese el resultado...'}
-                                value={item.value_text}
-                                onChange={e =>
-                                  updateEntryValue(param.id, 'value_text', e.target.value)
-                                }
-                              />
-                              {param.valor_default && (
-                                <p className="text-[11px] text-slate-500 mt-1">
-                                  Valor por defecto: <span className="font-medium">{param.valor_default}</span>
-                                </p>
-                              )}
-                            </>
-                          )}
-
-                          {param.allow_observation && (
-                            <div className="mt-3">
-                              <Label className="text-xs font-semibold text-slate-600">
-                                Observación
-                              </Label>
-                              <Textarea
-                                className="bg-white border-slate-200 min-h-[70px] mt-1"
-                                placeholder="Observación opcional..."
-                                value={item.observation}
-                                onChange={e =>
-                                  updateEntryValue(param.id, 'observation', e.target.value)
-                                }
-                              />
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="col-span-12 md:col-span-3">
-                          {status && (
-                            <Badge
-                              className={`w-full justify-center ${
-                                status === 'normal'
-                                  ? 'bg-emerald-500'
-                                  : status === 'high'
-                                  ? 'bg-rose-500'
-                                  : status === 'low'
-                                  ? 'bg-amber-500'
-                                  : status === 'positive'
-                                  ? 'bg-rose-500'
-                                  : status === 'negative'
-                                  ? 'bg-emerald-500'
-                                  : 'bg-slate-600'
-                              } text-white border-0 shadow-sm`}
-                            >
-                              {status === 'normal' && 'NORMAL'}
-                              {status === 'high' && 'ALTO ↑'}
-                              {status === 'low' && 'BAJO ↓'}
-                              {status === 'positive' && (param.bool_true_label || 'POSITIVO')}
-                              {status === 'negative' && (param.bool_false_label || 'NEGATIVO')}
-                              {status === 'text' && 'TEXTO'}
-                            </Badge>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
+                  <p className="font-semibold text-slate-800">Diseño del PDF</p>
+                  <p className="mt-1 text-xs leading-5 text-slate-600">
+                    Arrastra las pruebas para definir el orden del PDF. Dentro de cada prueba también
+                    puedes arrastrar divisores y parámetros. Para hacer que varias pruebas salgan en
+                    una sola hoja, asígnales el mismo grupo de hoja; el PDF usará una columna y,
+                    cuando sea necesario, cambiará automáticamente a dos columnas.
+                  </p>
                 </div>
               </div>
-            ))}
+            </div>
+
+            <DndContext
+              sensors={sensors}
+              collisionDetection={closestCenter}
+              onDragEnd={handlePdfDragEnd}
+            >
+              <SortableContext
+                items={(orderDetails?.tests || []).map((test: any) => `test:${test.layoutKey}`)}
+                strategy={verticalListSortingStrategy}
+              >
+                <div className="space-y-5">
+                  {(orderDetails?.tests || []).map((test: any, testIndex: number) => (
+                    <SortableShell key={test.layoutKey} id={`test:${test.layoutKey}`}>
+                      {(testHandleProps, draggingTest) => (
+                        <div
+                          className={`overflow-hidden rounded-xl border bg-white shadow-sm transition ${
+                            draggingTest ? 'border-primary shadow-lg' : 'border-slate-200'
+                          } ${test.pdf_included === false ? 'opacity-70' : ''}`}
+                        >
+                          <div className="flex flex-col gap-3 border-b bg-slate-50/80 p-4 lg:flex-row lg:items-center lg:justify-between">
+                            <div className="flex min-w-0 items-start gap-3">
+                              <button
+                                type="button"
+                                {...testHandleProps}
+                                className="mt-0.5 cursor-grab rounded-md border bg-white p-2 text-slate-500 shadow-sm active:cursor-grabbing"
+                                title="Arrastrar prueba"
+                              >
+                                <GripVertical className="h-4 w-4" />
+                              </button>
+
+                              <div className="min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <Badge variant="outline">#{testIndex + 1}</Badge>
+                                  <h3 className="font-display text-lg font-bold text-slate-800">
+                                    {test.name}
+                                  </h3>
+                                </div>
+                                {test.visible_description && test.description?.trim() && (
+                                  <p className="mt-1 text-sm text-slate-600">{test.description}</p>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-3">
+                              <label className="flex cursor-pointer items-center gap-2 rounded-lg border bg-white px-3 py-2 text-xs font-semibold text-slate-700">
+                                <input
+                                  type="checkbox"
+                                  checked={test.pdf_included !== false}
+                                  onChange={(e) =>
+                                    updateTestPdfOption(test.layoutKey, {
+                                      pdf_included: e.target.checked,
+                                    })
+                                  }
+                                  className="h-4 w-4"
+                                />
+                                Incluir en PDF
+                              </label>
+
+                              <div className="min-w-[190px]">
+                                <Select
+                                  value={test.pdf_page_group || 'none'}
+                                  onValueChange={(value) =>
+                                    updateTestPdfOption(test.layoutKey, {
+                                      pdf_page_group: value === 'none' ? null : value,
+                                    })
+                                  }
+                                  disabled={test.pdf_included === false}
+                                >
+                                  <SelectTrigger className="bg-white">
+                                    <Layers3 className="mr-2 h-4 w-4 text-slate-500" />
+                                    <SelectValue placeholder="Grupo de hoja" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    <SelectItem value="none">Sin grupo de hoja</SelectItem>
+                                    {PDF_PAGE_GROUPS.map((group) => (
+                                      <SelectItem key={group} value={group}>
+                                        Misma hoja · Grupo {group}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              </div>
+                            </div>
+                          </div>
+
+                          <div className="p-4">
+                            <SortableContext
+                              items={(test.structure_items || []).map(
+                                (structureItem: any) =>
+                                  `item:${test.layoutKey}::${getStructureItemLayoutId(structureItem)}`
+                              )}
+                              strategy={verticalListSortingStrategy}
+                            >
+                              <div className="space-y-3">
+                                {(test.structure_items || []).map((structureItem: any) => {
+                                  const sortableId = `item:${test.layoutKey}::${getStructureItemLayoutId(
+                                    structureItem
+                                  )}`;
+
+                                  if (structureItem.item_type === 'divider') {
+                                    return (
+                                      <SortableShell key={sortableId} id={sortableId}>
+                                        {(itemHandleProps, draggingItem) => (
+                                          <div
+                                            className={`flex items-center gap-3 rounded-lg border border-primary/20 bg-primary/5 px-3 py-3 ${
+                                              draggingItem ? 'shadow-md ring-2 ring-primary/20' : ''
+                                            }`}
+                                          >
+                                            <button
+                                              type="button"
+                                              {...itemHandleProps}
+                                              className="cursor-grab rounded-md border bg-white p-2 text-slate-500 active:cursor-grabbing"
+                                              title="Arrastrar divisor"
+                                            >
+                                              <GripVertical className="h-4 w-4" />
+                                            </button>
+                                            <p className="font-display text-base font-bold text-slate-800 underline decoration-primary/30 underline-offset-4">
+                                              {structureItem.texto}
+                                            </p>
+                                          </div>
+                                        )}
+                                      </SortableShell>
+                                    );
+                                  }
+
+                                  const param = structureItem.parameter;
+                                  const item = entryValues[param.id] || emptyEntryValue();
+                                  const range = getAppliedRange(param, orderDetails.pacientes);
+                                  const status = getStatusPreview(param);
+                                  const resultType: ResultType = param.result_type || 'numeric';
+
+                                  return (
+                                    <SortableShell key={sortableId} id={sortableId}>
+                                      {(itemHandleProps, draggingItem) => (
+                                        <div
+                                          className={`grid grid-cols-12 items-start gap-4 rounded-lg border border-slate-100 bg-slate-50/50 p-3 ${
+                                            draggingItem ? 'shadow-md ring-2 ring-primary/20' : ''
+                                          }`}
+                                        >
+                                          <div className="col-span-12 flex gap-3 md:col-span-4">
+                                            <button
+                                              type="button"
+                                              {...itemHandleProps}
+                                              className="h-fit cursor-grab rounded-md border bg-white p-2 text-slate-500 active:cursor-grabbing"
+                                              title="Arrastrar parámetro"
+                                            >
+                                              <GripVertical className="h-4 w-4" />
+                                            </button>
+                                            <div>
+                                              <Label className="text-sm font-bold text-slate-700">
+                                                {param.name}
+                                              </Label>
+                                              <div className="mt-1 flex flex-wrap gap-2 font-mono text-[10px] text-slate-500">
+                                                <span>Tipo: {resultType}</span>
+                                                {resultType === 'numeric' && (
+                                                  <span>Unidad: {param.unit || '—'}</span>
+                                                )}
+                                                {resultType === 'numeric' && range && (
+                                                  <span>Ref: [{range.min} - {range.max}]</span>
+                                                )}
+                                              </div>
+                                            </div>
+                                          </div>
+
+                                          <div className="col-span-12 md:col-span-5">
+                                            {resultType === 'numeric' && (
+                                              <Input
+                                                type="number"
+                                                step="any"
+                                                className="border-slate-200 bg-white"
+                                                placeholder="0.00"
+                                                value={item.value_numeric}
+                                                onChange={(e) =>
+                                                  updateEntryValue(
+                                                    param.id,
+                                                    'value_numeric',
+                                                    e.target.value
+                                                  )
+                                                }
+                                              />
+                                            )}
+
+                                            {resultType === 'boolean' && (
+                                              <Select
+                                                value={item.value_boolean}
+                                                onValueChange={(value) =>
+                                                  updateEntryValue(
+                                                    param.id,
+                                                    'value_boolean',
+                                                    value as '' | 'true' | 'false'
+                                                  )
+                                                }
+                                              >
+                                                <SelectTrigger className="bg-white">
+                                                  <SelectValue placeholder="Seleccione un valor" />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                  <SelectItem value="true">
+                                                    {param.bool_true_label || 'Positivo'}
+                                                  </SelectItem>
+                                                  <SelectItem value="false">
+                                                    {param.bool_false_label || 'Negativo'}
+                                                  </SelectItem>
+                                                </SelectContent>
+                                              </Select>
+                                            )}
+
+                                            {resultType === 'text' && (
+                                              <>
+                                                <Textarea
+                                                  className="min-h-[90px] border-slate-200 bg-white"
+                                                  placeholder={
+                                                    param.valor_default
+                                                      ? 'Valor precargado editable...'
+                                                      : 'Ingrese el resultado...'
+                                                  }
+                                                  value={item.value_text}
+                                                  onChange={(e) =>
+                                                    updateEntryValue(
+                                                      param.id,
+                                                      'value_text',
+                                                      e.target.value
+                                                    )
+                                                  }
+                                                />
+                                                {param.valor_default && (
+                                                  <p className="mt-1 text-[11px] text-slate-500">
+                                                    Valor por defecto:{' '}
+                                                    <span className="font-medium">
+                                                      {param.valor_default}
+                                                    </span>
+                                                  </p>
+                                                )}
+                                              </>
+                                            )}
+
+                                            {param.allow_observation && (
+                                              <div className="mt-3">
+                                                <Label className="text-xs font-semibold text-slate-600">
+                                                  Observación
+                                                </Label>
+                                                <Textarea
+                                                  className="mt-1 min-h-[70px] border-slate-200 bg-white"
+                                                  placeholder="Observación opcional..."
+                                                  value={item.observation}
+                                                  onChange={(e) =>
+                                                    updateEntryValue(
+                                                      param.id,
+                                                      'observation',
+                                                      e.target.value
+                                                    )
+                                                  }
+                                                />
+                                              </div>
+                                            )}
+                                          </div>
+
+                                          <div className="col-span-12 md:col-span-3">
+                                            {status && (
+                                              <Badge
+                                                className={`w-full justify-center ${
+                                                  status === 'normal'
+                                                    ? 'bg-emerald-500'
+                                                    : status === 'high'
+                                                    ? 'bg-rose-500'
+                                                    : status === 'low'
+                                                    ? 'bg-amber-500'
+                                                    : status === 'positive'
+                                                    ? 'bg-rose-500'
+                                                    : status === 'negative'
+                                                    ? 'bg-emerald-500'
+                                                    : 'bg-slate-600'
+                                                } border-0 text-white shadow-sm`}
+                                              >
+                                                {status === 'normal' && 'NORMAL'}
+                                                {status === 'high' && 'ALTO ↑'}
+                                                {status === 'low' && 'BAJO ↓'}
+                                                {status === 'positive' &&
+                                                  (param.bool_true_label || 'POSITIVO')}
+                                                {status === 'negative' &&
+                                                  (param.bool_false_label || 'NEGATIVO')}
+                                                {status === 'text' && 'TEXTO'}
+                                              </Badge>
+                                            )}
+                                          </div>
+                                        </div>
+                                      )}
+                                    </SortableShell>
+                                  );
+                                })}
+                              </div>
+                            </SortableContext>
+                          </div>
+                        </div>
+                      )}
+                    </SortableShell>
+                  ))}
+                </div>
+              </SortableContext>
+            </DndContext>
 
             <Button
               onClick={handleSaveResults}
