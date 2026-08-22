@@ -1857,8 +1857,22 @@ function renderGroupedOneColumn(
   doc: jsPDF,
   tests: PreparedTest[]
 ) {
-  const x = 22;
-  const width = 166;
+  /*
+   * UNA SOLA COLUMNA
+   *
+   * El bloque completo de parámetros queda centrado
+   * horizontalmente dentro de la hoja.
+   *
+   * No centramos individualmente cada texto porque necesitamos
+   * conservar la estructura:
+   *
+   * PARÁMETRO : VALOR        Rango ref.: ...
+   *
+   * Lo que se centra es toda esa columna como bloque.
+   */
+  const width = 154;
+  const x = (PAGE.width - width) / 2;
+
   const top = PAGE.frameTop + PAGE.innerPaddingTop;
   const bottom = PAGE.groupedContentBottom;
   const availableHeight = bottom - top;
@@ -2613,68 +2627,88 @@ function addLaboratoryWatermark(
   config: PdfLabConfig
 ) {
   const totalPages = doc.getNumberOfPages();
-  const logo = normalizeImageData(config.logo);
-  const logoFormat = imageFormatFromBase64(logo);
+
+  /*
+   * MARCA DE AGUA EN MATRIZ
+   *
+   * No usamos el logo porque la hoja ya tiene el fondo
+   * institucional. Se repite únicamente el nombre del laboratorio
+   * en diagonal, con baja opacidad.
+   */
+  const watermarkText =
+    safeText(config.name) ||
+    "LABORATORIO CLÍNICO";
 
   for (let page = 1; page <= totalPages; page++) {
     doc.setPage(page);
-
-    if (logo && logoFormat) {
-      try {
-        doc.saveGraphicsState();
-
-        (doc as any).setGState?.(
-          new (doc as any).GState({
-            opacity: 0.14,
-          })
-        );
-
-        doc.addImage(
-          logo,
-          logoFormat,
-          55,
-          108,
-          100,
-          100
-        );
-
-        doc.restoreGraphicsState();
-        continue;
-      } catch {
-        try {
-          doc.restoreGraphicsState();
-        } catch {
-          // ignorar
-        }
-      }
-    }
 
     try {
       doc.saveGraphicsState();
 
       (doc as any).setGState?.(
         new (doc as any).GState({
-          opacity: 0.12,
+          opacity: 0.075,
         })
       );
 
-      doc.setTextColor(120, 120, 120);
+      doc.setTextColor(95, 95, 95);
       doc.setFont("times", "bold");
-      doc.setFontSize(34);
 
-      const watermarkText =
-        safeText(config.name) ||
-        "LABORATORIO CLÍNICO";
+      /*
+       * Ajustamos el tamaño según la longitud del nombre para que
+       * cada repetición conserve una apariencia uniforme.
+       */
+      const normalizedText =
+        watermarkText.toUpperCase();
 
-      doc.text(
-        watermarkText.toUpperCase(),
-        105,
-        155,
-        {
-          align: "center",
-          angle: 35,
-        } as any
-      );
+      const fontSize =
+        normalizedText.length > 38
+          ? 10
+          : normalizedText.length > 28
+          ? 12
+          : 14;
+
+      doc.setFontSize(fontSize);
+
+      /*
+       * Matriz inclinada.
+       *
+       * Alternamos ligeramente el desplazamiento de cada fila
+       * para que no parezca una cuadrícula rígida.
+       */
+      const rows = [
+        92,
+        118,
+        144,
+        170,
+        196,
+        222,
+        248,
+      ];
+
+      const columns = [
+        26,
+        91,
+        156,
+      ];
+
+      rows.forEach((y, rowIndex) => {
+        columns.forEach((baseX) => {
+          const x =
+            baseX +
+            (rowIndex % 2 === 0 ? 0 : 18);
+
+          doc.text(
+            normalizedText,
+            x,
+            y,
+            {
+              align: "center",
+              angle: 32,
+            } as any
+          );
+        });
+      });
 
       doc.restoreGraphicsState();
     } catch {
