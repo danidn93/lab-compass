@@ -755,6 +755,58 @@ export default function ResultsPage() {
     });
   };
 
+  /**
+   * Mantiene juntos, de forma consecutiva, todos los exámenes que pertenecen
+   * al mismo grupo de hoja. La posición del bloque se determina por la posición
+   * del primer examen del grupo en el orden actual.
+   */
+  const compactTestsByPageGroup = (tests: any[] = []) => {
+    const compacted: any[] = [];
+    const processedGroups = new Set<string>();
+
+    for (const test of tests) {
+      const group = test?.pdf_page_group ? String(test.pdf_page_group) : null;
+
+      if (!group) {
+        compacted.push(test);
+        continue;
+      }
+
+      if (processedGroups.has(group)) continue;
+      processedGroups.add(group);
+
+      const members = tests.filter(
+        (candidate: any) => String(candidate?.pdf_page_group || '') === group
+      );
+
+      compacted.push(...members);
+    }
+
+    return compacted;
+  };
+
+  /**
+   * Al asignar un grupo de hoja, además de guardar el grupo compactamos la lista
+   * para que los exámenes del mismo grupo queden físicamente juntos en el orden
+   * que se enviará al PDF.
+   */
+  const updateTestPageGroup = (layoutKey: string, pageGroup: string | null) => {
+    setOrderDetails((prev: any) => {
+      if (!prev) return prev;
+
+      const updatedTests = (prev.tests || []).map((test: any) =>
+        String(test.layoutKey) === String(layoutKey)
+          ? { ...test, pdf_page_group: pageGroup }
+          : test
+      );
+
+      return {
+        ...prev,
+        tests: compactTestsByPageGroup(updatedTests),
+      };
+    });
+  };
+
   const handlePdfDragEnd = (event: DragEndEvent) => {
     const activeId = String(event.active.id);
     const overId = event.over ? String(event.over.id) : '';
@@ -770,7 +822,13 @@ export default function ResultsPage() {
         const oldIndex = tests.findIndex((test: any) => String(test.layoutKey) === activeKey);
         const newIndex = tests.findIndex((test: any) => String(test.layoutKey) === overKey);
         if (oldIndex < 0 || newIndex < 0) return prev;
-        return { ...prev, tests: arrayMove(tests, oldIndex, newIndex) };
+
+        const movedTests = arrayMove(tests, oldIndex, newIndex);
+
+        return {
+          ...prev,
+          tests: compactTestsByPageGroup(movedTests),
+        };
       }
 
       if (activeId.startsWith('item:') && overId.startsWith('item:')) {
@@ -1005,13 +1063,14 @@ export default function ResultsPage() {
     const savedTests = Array.isArray(savedLayout?.tests) ? savedLayout!.tests : [];
     const savedByKey = new Map(savedTests.map((item) => [item.key, item]));
 
-    const groupedResults = rawGroupedResults
+    const resultsWithLayout = rawGroupedResults
       .filter((res: any) => savedByKey.get(res.layoutKey)?.included !== false)
       .map((res: any, originalIndex: number) => {
         const layoutTest = savedByKey.get(res.layoutKey);
         const itemOrder = new Map(
           (layoutTest?.items || []).map((item: PdfLayoutItem) => [item.id, item.order])
         );
+
         const details = [...(res.details || [])].sort((a: any, b: any) => {
           const ao = itemOrder.get(getPdfDetailLayoutId(a));
           const bo = itemOrder.get(getPdfDetailLayoutId(b));
@@ -1027,6 +1086,38 @@ export default function ResultsPage() {
       })
       .sort((a: any, b: any) => a.pdfOrder - b.pdfOrder);
 
+    /**
+     * Un grupo de hoja se trata como un bloque indivisible:
+     * - conserva la posición del primer examen del grupo;
+     * - todos sus miembros quedan consecutivos;
+     * - conserva el orden relativo definido por drag & drop.
+     *
+     * El pdfGenerator recibe pageGroup para poder intentar colocar todo el bloque
+     * en una misma hoja y, si una columna no es suficiente, distribuirlo en dos.
+     */
+    const groupedResults: any[] = [];
+    const processedPageGroups = new Set<string>();
+
+    for (const result of resultsWithLayout) {
+      const pageGroup = result?.pageGroup ? String(result.pageGroup) : null;
+
+      if (!pageGroup) {
+        groupedResults.push(result);
+        continue;
+      }
+
+      if (processedPageGroups.has(pageGroup)) continue;
+      processedPageGroups.add(pageGroup);
+
+      const members = resultsWithLayout
+        .filter(
+          (candidate: any) => String(candidate?.pageGroup || '') === pageGroup
+        )
+        .sort((a: any, b: any) => Number(a.pdfOrder) - Number(b.pdfOrder));
+
+      groupedResults.push(...members);
+    }
+
     const orderTests = groupedResults.map((res: any) => ({
       id: res.testId,
       layoutKey: res.layoutKey,
@@ -1036,7 +1127,7 @@ export default function ResultsPage() {
       pageGroup: res.pageGroup || null,
     }));
 
-    const orderResults: PdfOrderResult[] = groupedResults.map((res: any) => ({
+    const orderResults = groupedResults.map((res: any) => ({
       id: res.id,
       testId: res.testId,
       testName: res.testName,
@@ -1045,9 +1136,96 @@ export default function ResultsPage() {
       notes: res.notes || '',
       date: res.date || null,
       details: res.details,
-    }));
+
+      // También se incluye aquí para que el generador no dependa únicamente
+      // de orderTests al resolver la agrupación física de páginas.
+      pageGroup: res.pageGroup || null,
+    })) as Array<PdfOrderResult & { pageGroup?: string | null }>;
 
     return { pdfConfig, pdfPatient, pdfOrder, orderTests, orderResults };
+  };
+
+
+  const generateResultsPdfBlob = async (
+    orderId: string,
+    watermark = false
+  ) => {
+    const [
+      { data: configData, error: configError },
+      { data: orderData, error: orderError },
+    ] = await Promise.all([
+      supabase
+        .from('configuracion_laboratorio')
+        .select('*')
+        .maybeSingle(),
+
+      supabase
+        .from('ordenes')
+        .select(`
+          *,
+          pacientes (*),
+          resultados (
+            *,
+            resultado_detalle (
+              *,
+              parametros_prueba (
+                *,
+                rangos_referencia (*)
+              )
+            ),
+            pruebas (
+              id,
+              name,
+              description,
+              visible_description,
+              parametros_prueba_divisores (
+                id,
+                texto,
+                sort_order,
+                activo
+              )
+            )
+          )
+        `)
+        .eq('id', orderId)
+        .maybeSingle(),
+    ]);
+
+    if (configError) throw configError;
+    if (orderError) throw orderError;
+    if (!configData) throw new Error('No existe la configuración del laboratorio');
+    if (!orderData) throw new Error('No se encontró la orden');
+    if (!orderData.resultados?.length) {
+      throw new Error('La orden no tiene resultados registrados');
+    }
+
+    const {
+      pdfConfig,
+      pdfPatient,
+      pdfOrder,
+      orderTests,
+      orderResults,
+    } = buildPdfPayloadFromOrderData(
+      configData,
+      orderData
+    );
+
+    const blob = generateResultsPDF(
+      pdfOrder,
+      pdfPatient,
+      orderTests,
+      orderResults,
+      pdfConfig,
+      {
+        autoDownload: false,
+        watermark,
+      }
+    );
+
+    return {
+      blob,
+      orderData,
+    };
   };
 
   const generateAndUploadResultsPdf = async (orderId: string) => {
@@ -1536,25 +1714,63 @@ export default function ResultsPage() {
       const total = round2(safeNumber(orderData.total, 0));
       const paid = round2(safeNumber(orderData.paid_amount, 0));
       const saldo = round2(Math.max(total - paid, 0));
+      const isPaid = paid >= total && total > 0;
 
-      if (paid < total) {
-        throw new Error(
-          `No se puede descargar el PDF porque la orden aún no está pagada en su totalidad. Saldo pendiente: $${saldo.toFixed(2)}`
+      if (!isPaid) {
+        toast.info(
+          `La orden mantiene un saldo pendiente de $${saldo.toFixed(
+            2
+          )}. Se descargará una copia con marca de agua.`
         );
+
+        const { blob, orderData: fullOrderData } =
+          await generateResultsPdfBlob(
+            orderId,
+            true
+          );
+
+        downloadBlob(
+          blob,
+          `resultados_${
+            fullOrderData.code ||
+            orderData.code ||
+            'resultados'
+          }_marca_agua.pdf`
+        );
+
+        toast.success(
+          'PDF con marca de agua descargado correctamente'
+        );
+        return;
       }
 
       let pdfUrl =
-        orderData.resultados?.find((r: any) => !!r.resultados_url)?.resultados_url || null;
+        orderData.resultados?.find(
+          (r: any) => !!r.resultados_url
+        )?.resultados_url || null;
 
       if (!pdfUrl) {
-        toast.info('No existía PDF almacenado. Se generará y guardará ahora...');
-        pdfUrl = await generateAndUploadResultsPdf(orderId);
+        toast.info(
+          'No existía PDF almacenado. Se generará y guardará ahora...'
+        );
+
+        pdfUrl =
+          await generateAndUploadResultsPdf(
+            orderId
+          );
       }
 
-      await downloadPdfFromUrl(pdfUrl, orderData.code || 'resultados');
+      await downloadPdfFromUrl(
+        pdfUrl,
+        orderData.code || 'resultados'
+      );
+
       toast.success('PDF descargado correctamente');
     } catch (error: any) {
-      toast.error('No se pudo obtener el PDF: ' + (error?.message || 'desconocido'));
+      toast.error(
+        'No se pudo obtener el PDF: ' +
+          (error?.message || 'desconocido')
+      );
     } finally {
       setDownloadingOrderId(null);
     }
@@ -1763,21 +1979,23 @@ export default function ResultsPage() {
                           <Button
                             variant="ghost"
                             size="icon"
-                            className={paid ? 'text-blue-600' : 'text-slate-400'}
-                            onClick={() => {
-                              if (!paid) {
-                                toast.error(
-                                  `No se puede descargar el PDF porque la orden aún tiene un saldo pendiente de $${saldo.toFixed(2)}`
-                                );
-                                return;
-                              }
-                              handleDownloadResultPdf(order.id);
-                            }}
-                            disabled={downloadingOrderId === order.id || !paid}
+                            className={
+                              paid
+                                ? 'text-blue-600'
+                                : 'text-amber-600'
+                            }
+                            onClick={() =>
+                              handleDownloadResultPdf(order.id)
+                            }
+                            disabled={
+                              downloadingOrderId === order.id
+                            }
                             title={
                               paid
                                 ? 'Descargar PDF'
-                                : `Pago incompleto. Saldo pendiente: $${saldo.toFixed(2)}`
+                                : `Descargar con marca de agua. Saldo pendiente: $${saldo.toFixed(
+                                    2
+                                  )}`
                             }
                           >
                             {downloadingOrderId === order.id ? (
@@ -1855,8 +2073,9 @@ export default function ResultsPage() {
                   <p className="mt-1 text-xs leading-5 text-slate-600">
                     Arrastra las pruebas para definir el orden del PDF. Dentro de cada prueba también
                     puedes arrastrar divisores y parámetros. Para hacer que varias pruebas salgan en
-                    una sola hoja, asígnales el mismo grupo de hoja; el PDF usará una columna y,
-                    cuando sea necesario, cambiará automáticamente a dos columnas.
+                    una sola hoja, asígnales el mismo grupo de hoja. Los exámenes del grupo se mantienen
+                    juntos y el PDF debe usar una columna; si por la cantidad de líneas no caben, debe
+                    distribuir el mismo grupo en dos columnas antes de crear una hoja adicional.
                   </p>
                 </div>
               </div>
@@ -1923,9 +2142,10 @@ export default function ResultsPage() {
                                 <Select
                                   value={test.pdf_page_group || 'none'}
                                   onValueChange={(value) =>
-                                    updateTestPdfOption(test.layoutKey, {
-                                      pdf_page_group: value === 'none' ? null : value,
-                                    })
+                                    updateTestPageGroup(
+                                      test.layoutKey,
+                                      value === 'none' ? null : value
+                                    )
                                   }
                                   disabled={test.pdf_included === false}
                                 >
