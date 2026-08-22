@@ -1860,16 +1860,13 @@ function renderGroupedOneColumn(
   /*
    * UNA SOLA COLUMNA
    *
-   * El bloque completo de parámetros queda centrado
-   * horizontalmente dentro de la hoja.
-   *
-   * No centramos individualmente cada texto porque necesitamos
-   * conservar la estructura:
-   *
-   * PARÁMETRO : VALOR        Rango ref.: ...
-   *
-   * Lo que se centra es toda esa columna como bloque.
+   * - El bloque completo queda centrado horizontalmente.
+   * - Si sobra altura, el bloque completo (título + parámetros)
+   *   se centra verticalmente dentro del área útil.
+   * - Si además sobra espacio suficiente, se reparte una parte
+   *   entre las filas, pero sin exagerar la separación.
    */
+
   const width = 154;
   const x = (PAGE.width - width) / 2;
 
@@ -1877,6 +1874,9 @@ function renderGroupedOneColumn(
   const bottom = PAGE.groupedContentBottom;
   const availableHeight = bottom - top;
 
+  /*
+   * Altura natural del bloque sin separación extra.
+   */
   const naturalHeight = tests.reduce(
     (acc, test) =>
       acc +
@@ -1893,25 +1893,107 @@ function renderGroupedOneColumn(
     (acc, test) =>
       acc +
       countParameterRows(
-        preserveDetailsOrder(test._result.details || [])
+        preserveDetailsOrder(
+          test._result.details || []
+        )
       ),
     0
   );
 
   /*
-   * Si sobra espacio debajo del último parámetro, en vez de
-   * dejar una zona vacía muy grande repartimos parte de ese
-   * espacio entre las filas. Limitamos el incremento para que
-   * tampoco se vea artificialmente separado.
+   * Solo usamos una parte moderada del espacio libre
+   * como separación extra entre parámetros.
    */
-  const rowGap = calculateExtraRowGap(
-    availableHeight,
-    naturalHeight,
-    parameterRows,
-    3.2
+  const freeSpace = Math.max(
+    0,
+    availableHeight - naturalHeight
   );
 
-  let y = top;
+  const spacingBudget = freeSpace * 0.35;
+
+  const rowGap =
+    parameterRows > 1
+      ? Math.min(
+          2.8,
+          spacingBudget /
+            Math.max(
+              1,
+              parameterRows - 1
+            )
+        )
+      : 0;
+
+  /*
+   * Calculamos nuevamente la altura del bloque
+   * considerando la separación extra.
+   */
+  const adjustedHeight = tests.reduce(
+    (acc, test) => {
+      const result = test._result;
+
+      const titleHeight =
+        getTestTitleBlockMetrics(
+          doc,
+          test.name,
+          test.description || "",
+          test.visible_description ?? true,
+          {
+            width,
+            compact: false,
+          }
+        ).height;
+
+      const details =
+        preserveDetailsOrder(
+          result.details || []
+        );
+
+      let contentHeight = 0;
+
+      if (safeText(result.notes)) {
+        contentHeight =
+          estimateNotesTotalHeight(
+            doc,
+            result.notes || "",
+            Math.max(45, width - 38),
+            Math.max(30, width - 6),
+            5
+          );
+      } else if (details.length) {
+        contentHeight =
+          measureGroupedDetailsHeight(
+            doc,
+            details,
+            width,
+            false,
+            rowGap
+          );
+      } else {
+        contentHeight = 8;
+      }
+
+      return (
+        acc +
+        titleHeight +
+        3 +
+        contentHeight +
+        5
+      );
+    },
+    0
+  );
+
+  /*
+   * Centrado vertical real:
+   *
+   * Si el bloque cabe, empezamos más abajo para dejar
+   * la misma cantidad de aire arriba y abajo.
+   */
+  let y =
+    adjustedHeight < availableHeight
+      ? top +
+        (availableHeight - adjustedHeight) / 2
+      : top;
 
   tests.forEach((test) => {
     y = drawGroupedTestBlock(
