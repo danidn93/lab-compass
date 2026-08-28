@@ -1,4 +1,4 @@
-import React, { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -18,29 +18,11 @@ import {
   ChevronDown,
   ChevronUp,
   MessageCircle,
-  GripVertical,
   Layers3,
   FileStack,
 } from 'lucide-react';
 import { toast } from 'sonner';
 
-import {
-  DndContext,
-  DragEndEvent,
-  KeyboardSensor,
-  PointerSensor,
-  closestCenter,
-  useSensor,
-  useSensors,
-} from '@dnd-kit/core';
-import {
-  SortableContext,
-  arrayMove,
-  sortableKeyboardCoordinates,
-  useSortable,
-  verticalListSortingStrategy,
-} from '@dnd-kit/sortable';
-import { CSS } from '@dnd-kit/utilities';
 
 import { Textarea } from '@/components/ui/textarea';
 import {
@@ -95,41 +77,6 @@ function getPdfDetailLayoutId(item: any): string {
     return String(item?.id || '').replace(/^divider-/, '');
   }
   return String(item?.parameterId || item?.id || '');
-}
-
-function SortableShell({
-  id,
-  children,
-  disabled = false,
-  className = '',
-}: {
-  id: string;
-  children: (handleProps: any, dragging: boolean) => ReactNode;
-  disabled?: boolean;
-  className?: string;
-}) {
-  const {
-    attributes,
-    listeners,
-    setNodeRef,
-    transform,
-    transition,
-    isDragging,
-  } = useSortable({ id, disabled });
-
-  const style: React.CSSProperties = {
-    transform: CSS.Transform.toString(transform),
-    transition,
-    zIndex: isDragging ? 50 : undefined,
-    opacity: isDragging ? 0.72 : 1,
-    position: 'relative',
-  };
-
-  return (
-    <div ref={setNodeRef} style={style} className={className}>
-      {children({ ...attributes, ...listeners }, isDragging)}
-    </div>
-  );
 }
 
 interface DividerDisplayItem {
@@ -316,13 +263,21 @@ function normalizeExamDescription(
 
 function buildGroupedTestKey(
   name: any,
-  description: any,
-  visibleDescription: boolean | null | undefined
+  _description?: any,
+  _visibleDescription?: boolean | null | undefined
 ) {
-  return `${normalizeExamName(name)}|||${normalizeExamDescription(
-    description,
-    visibleDescription
-  )}`;
+  // Una prueba se identifica únicamente por su nombre.
+  // Si la orden contiene varias pruebas con el mismo nombre,
+  // todos sus parámetros se consolidan en una sola prueba.
+  return normalizeExamName(name);
+}
+
+function normalizeSavedLayoutKey(value: any) {
+  const raw = String(value || '').trim().toLowerCase();
+
+  // Compatibilidad con diseños guardados por versiones anteriores,
+  // donde la clave era: nombre|||descripción.
+  return raw.split('|||')[0].trim();
 }
 
 function groupTestsByName(details: any[] = []) {
@@ -615,11 +570,16 @@ export default function ResultsPage() {
   const [search, setSearch] = useState('');
   const [historyOpen, setHistoryOpen] = useState(false);
 
+  type RelativePosition = 'before' | 'after';
 
-  const sensors = useSensors(
-    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
-    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
-  );
+  const [testMoveSelections, setTestMoveSelections] = useState<
+    Record<string, { position: RelativePosition; targetKey: string }>
+  >({});
+
+  const [parameterMoveSelections, setParameterMoveSelections] = useState<
+    Record<string, { position: RelativePosition; targetId: string }>
+  >({});
+
 
   useEffect(() => {
     fetchOrders();
@@ -710,7 +670,10 @@ export default function ResultsPage() {
   });
 
   const applySavedPdfLayoutToTests = (tests: any[] = [], savedLayout: any): any[] => {
-    const layoutTests: PdfTestLayout[] = Array.isArray(savedLayout?.tests) ? savedLayout.tests : [];
+    const layoutTests: PdfTestLayout[] = Array.isArray(savedLayout?.tests)
+      ? savedLayout.tests
+      : [];
+
     if (!layoutTests.length) {
       return tests.map((test: any) => ({
         ...test,
@@ -719,22 +682,93 @@ export default function ResultsPage() {
       }));
     }
 
-    const byKey = new Map(layoutTests.map((item) => [item.key, item]));
+    /**
+     * MIGRACIÓN DE DISEÑOS ANTIGUOS
+     *
+     * Antes el layoutKey incluía nombre + descripción. Ahora una prueba
+     * se identifica únicamente por nombre. Si existen varias entradas
+     * antiguas con el mismo nombre, se fusionan también sus órdenes de
+     * parámetros en una sola entrada lógica.
+     */
+    const mergedSavedByName = new Map<string, PdfTestLayout>();
+
+    layoutTests.forEach((item, savedIndex) => {
+      const key = normalizeSavedLayoutKey(item.key);
+      if (!key) return;
+
+      const current = mergedSavedByName.get(key);
+
+      if (!current) {
+        mergedSavedByName.set(key, {
+          ...item,
+          key,
+          order: Number.isFinite(Number(item.order))
+            ? Number(item.order)
+            : savedIndex,
+          items: [...(item.items || [])],
+        });
+        return;
+      }
+
+      const existingIds = new Set((current.items || []).map((x) => String(x.id)));
+      const mergedItems = [...(current.items || [])];
+
+      (item.items || [])
+        .slice()
+        .sort((a, b) => Number(a.order) - Number(b.order))
+        .forEach((savedItem) => {
+          if (!existingIds.has(String(savedItem.id))) {
+            mergedItems.push({
+              ...savedItem,
+              order: mergedItems.length,
+            });
+            existingIds.add(String(savedItem.id));
+          }
+        });
+
+      current.items = mergedItems;
+      current.order = Math.min(
+        Number.isFinite(Number(current.order)) ? Number(current.order) : savedIndex,
+        Number.isFinite(Number(item.order)) ? Number(item.order) : savedIndex
+      );
+
+      if (!current.pageGroup && item.pageGroup) {
+        current.pageGroup = item.pageGroup;
+      }
+
+      // Si cualquiera de las entradas antiguas estaba incluida, mantenemos
+      // la prueba consolidada incluida.
+      current.included = current.included !== false || item.included !== false;
+    });
 
     return tests
       .map((test: any, originalIndex: number) => {
-        const key = String(
-          test.layoutKey || buildGroupedTestKey(test.name, test.description, test.visible_description)
+        const key = buildGroupedTestKey(
+          test.name,
+          test.description,
+          test.visible_description
         );
-        const saved = byKey.get(key);
+
+        const saved = mergedSavedByName.get(key);
 
         let structureItems = [...(test.structure_items || [])];
+
         if (saved?.items?.length) {
-          const itemOrder = new Map(saved.items.map((item) => [item.id, item.order]));
+          const itemOrder = new Map(
+            saved.items.map((item) => [String(item.id), Number(item.order)])
+          );
+
           structureItems.sort((a: any, b: any) => {
             const ao = itemOrder.get(getStructureItemLayoutId(a));
             const bo = itemOrder.get(getStructureItemLayoutId(b));
-            return (ao ?? Number.MAX_SAFE_INTEGER) - (bo ?? Number.MAX_SAFE_INTEGER);
+
+            const aOrder = ao ?? Number.MAX_SAFE_INTEGER;
+            const bOrder = bo ?? Number.MAX_SAFE_INTEGER;
+
+            if (aOrder !== bOrder) return aOrder - bOrder;
+
+            return Number(a?.sort_order ?? Number.MAX_SAFE_INTEGER) -
+              Number(b?.sort_order ?? Number.MAX_SAFE_INTEGER);
           });
         }
 
@@ -814,55 +848,115 @@ export default function ResultsPage() {
     });
   };
 
-  const handlePdfDragEnd = (event: DragEndEvent) => {
-    const activeId = String(event.active.id);
-    const overId = event.over ? String(event.over.id) : '';
-    if (!overId || activeId === overId) return;
+  const moveItemRelative = <T,>(
+    items: T[],
+    fromIndex: number,
+    targetIndex: number,
+    position: RelativePosition
+  ): T[] => {
+    if (
+      fromIndex < 0 ||
+      targetIndex < 0 ||
+      fromIndex >= items.length ||
+      targetIndex >= items.length ||
+      fromIndex === targetIndex
+    ) {
+      return items;
+    }
+
+    const next = [...items];
+    const [moved] = next.splice(fromIndex, 1);
+
+    const targetAfterRemoval =
+      fromIndex < targetIndex ? targetIndex - 1 : targetIndex;
+
+    const insertAt =
+      position === 'before'
+        ? targetAfterRemoval
+        : targetAfterRemoval + 1;
+
+    next.splice(Math.max(0, Math.min(insertAt, next.length)), 0, moved);
+    return next;
+  };
+
+  const moveTestRelative = (
+    layoutKey: string,
+    targetKey: string,
+    position: RelativePosition
+  ) => {
+    if (!targetKey || layoutKey === targetKey) return;
 
     setOrderDetails((prev: any) => {
       if (!prev) return prev;
+
       const tests = [...(prev.tests || [])];
+      const fromIndex = tests.findIndex(
+        (test: any) => String(test.layoutKey) === String(layoutKey)
+      );
+      const targetIndex = tests.findIndex(
+        (test: any) => String(test.layoutKey) === String(targetKey)
+      );
 
-      if (activeId.startsWith('test:') && overId.startsWith('test:')) {
-        const activeKey = activeId.slice(5);
-        const overKey = overId.slice(5);
-        const oldIndex = tests.findIndex((test: any) => String(test.layoutKey) === activeKey);
-        const newIndex = tests.findIndex((test: any) => String(test.layoutKey) === overKey);
-        if (oldIndex < 0 || newIndex < 0) return prev;
+      if (fromIndex < 0 || targetIndex < 0) return prev;
 
-        const movedTests = arrayMove(tests, oldIndex, newIndex);
+      return {
+        ...prev,
+        tests: compactTestsByPageGroup(
+          moveItemRelative(tests, fromIndex, targetIndex, position)
+        ),
+      };
+    });
+  };
 
-        return {
-          ...prev,
-          tests: compactTestsByPageGroup(movedTests),
-        };
-      }
+  const moveParameterRelative = (
+    layoutKey: string,
+    parameterId: string,
+    targetParameterId: string,
+    position: RelativePosition
+  ) => {
+    if (!targetParameterId || parameterId === targetParameterId) return;
 
-      if (activeId.startsWith('item:') && overId.startsWith('item:')) {
-        const activeParts = activeId.split('::');
-        const overParts = overId.split('::');
-        if (activeParts.length !== 2 || overParts.length !== 2) return prev;
+    setOrderDetails((prev: any) => {
+      if (!prev) return prev;
 
-        const activeTestKey = activeParts[0].replace(/^item:/, '');
-        const overTestKey = overParts[0].replace(/^item:/, '');
-        if (activeTestKey !== overTestKey) return prev;
+      const tests = [...(prev.tests || [])];
+      const testIndex = tests.findIndex(
+        (test: any) => String(test.layoutKey) === String(layoutKey)
+      );
 
-        const activeItemId = activeParts[1];
-        const overItemId = overParts[1];
-        const testIndex = tests.findIndex((test: any) => String(test.layoutKey) === activeTestKey);
-        if (testIndex < 0) return prev;
+      if (testIndex < 0) return prev;
 
-        const test = tests[testIndex];
-        const items = [...(test.structure_items || [])];
-        const oldIndex = items.findIndex((item: any) => getStructureItemLayoutId(item) === activeItemId);
-        const newIndex = items.findIndex((item: any) => getStructureItemLayoutId(item) === overItemId);
-        if (oldIndex < 0 || newIndex < 0) return prev;
+      const test = tests[testIndex];
+      const structureItems = [...(test.structure_items || [])];
 
-        tests[testIndex] = { ...test, structure_items: arrayMove(items, oldIndex, newIndex) };
-        return { ...prev, tests };
-      }
+      const fromIndex = structureItems.findIndex(
+        (item: any) =>
+          item.item_type === 'parameter' &&
+          getStructureItemLayoutId(item) === String(parameterId)
+      );
 
-      return prev;
+      const targetIndex = structureItems.findIndex(
+        (item: any) =>
+          item.item_type === 'parameter' &&
+          getStructureItemLayoutId(item) === String(targetParameterId)
+      );
+
+      if (fromIndex < 0 || targetIndex < 0) return prev;
+
+      tests[testIndex] = {
+        ...test,
+        structure_items: moveItemRelative(
+          structureItems,
+          fromIndex,
+          targetIndex,
+          position
+        ),
+      };
+
+      return {
+        ...prev,
+        tests,
+      };
     });
   };
 
@@ -2297,316 +2391,483 @@ export default function ResultsPage() {
                 <div>
                   <p className="font-semibold text-slate-800">Diseño del PDF</p>
                   <p className="mt-1 text-xs leading-5 text-slate-600">
-                    Arrastra las pruebas para definir el orden del PDF. Dentro de cada prueba también
-                    puedes arrastrar divisores y parámetros. Para hacer que varias pruebas salgan en
-                    una sola hoja, asígnales el mismo grupo de hoja. Los exámenes del grupo se mantienen
-                    juntos y el PDF debe usar una columna; si por la cantidad de líneas no caben, debe
-                    distribuir el mismo grupo en dos columnas antes de crear una hoja adicional.
+                    Define la ubicación indicando si una prueba debe ir arriba o debajo de otra prueba.
+                    Los parámetros se ordenan de la misma forma, pero únicamente respecto de otros
+                    parámetros de la misma prueba. Si existen varias pruebas con el mismo nombre, se
+                    consolidan automáticamente en una sola prueba y sus parámetros se muestran juntos.
+                    Para hacer que varias pruebas salgan en una sola hoja, asígnales el mismo grupo de hoja.
                   </p>
                 </div>
               </div>
             </div>
 
-            <DndContext
-              sensors={sensors}
-              collisionDetection={closestCenter}
-              onDragEnd={handlePdfDragEnd}
-            >
-              <SortableContext
-                items={(orderDetails?.tests || []).map((test: any) => `test:${test.layoutKey}`)}
-                strategy={verticalListSortingStrategy}
-              >
-                <div className="space-y-5">
-                  {(orderDetails?.tests || []).map((test: any, testIndex: number) => (
-                    <SortableShell key={test.layoutKey} id={`test:${test.layoutKey}`}>
-                      {(testHandleProps, draggingTest) => (
-                        <div
-                          className={`overflow-hidden rounded-xl border bg-white shadow-sm transition ${
-                            draggingTest ? 'border-primary shadow-lg' : 'border-slate-200'
-                          } ${test.pdf_included === false ? 'opacity-70' : ''}`}
-                        >
-                          <div className="flex flex-col gap-3 border-b bg-slate-50/80 p-4 lg:flex-row lg:items-center lg:justify-between">
-                            <div className="flex min-w-0 items-start gap-3">
-                              <button
-                                type="button"
-                                {...testHandleProps}
-                                className="mt-0.5 cursor-grab rounded-md border bg-white p-2 text-slate-500 shadow-sm active:cursor-grabbing"
-                                title="Arrastrar prueba"
-                              >
-                                <GripVertical className="h-4 w-4" />
-                              </button>
+            <div className="space-y-5">
+              {(orderDetails?.tests || []).map((test: any, testIndex: number) => {
+                const testMove =
+                  testMoveSelections[test.layoutKey] || {
+                    position: 'after' as RelativePosition,
+                    targetKey: '',
+                  };
 
-                              <div className="min-w-0">
-                                <div className="flex flex-wrap items-center gap-2">
-                                  <Badge variant="outline">#{testIndex + 1}</Badge>
-                                  <h3 className="font-display text-lg font-bold text-slate-800">
-                                    {test.name}
-                                  </h3>
+                const testTargets = (orderDetails?.tests || []).filter(
+                  (candidate: any) =>
+                    String(candidate.layoutKey) !== String(test.layoutKey)
+                );
+
+                const parameterItems = (test.structure_items || []).filter(
+                  (item: any) => item.item_type === 'parameter'
+                );
+
+                return (
+                  <div
+                    key={test.layoutKey}
+                    className={`overflow-hidden rounded-xl border bg-white shadow-sm transition ${
+                      test.pdf_included === false ? 'opacity-70' : ''
+                    }`}
+                  >
+                    <div className="flex flex-col gap-4 border-b bg-slate-50/80 p-4">
+                      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Badge variant="outline">#{testIndex + 1}</Badge>
+                            <h3 className="font-display text-lg font-bold text-slate-800">
+                              {test.name}
+                            </h3>
+
+                            {Array.isArray(test.test_ids) && test.test_ids.length > 1 && (
+                              <Badge className="border-0 bg-blue-100 text-blue-700 hover:bg-blue-100">
+                                {test.test_ids.length} pruebas consolidadas
+                              </Badge>
+                            )}
+                          </div>
+
+                          {test.visible_description && test.description?.trim() && (
+                            <p className="mt-1 text-sm text-slate-600">
+                              {test.description}
+                            </p>
+                          )}
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-3">
+                          <label className="flex cursor-pointer items-center gap-2 rounded-lg border bg-white px-3 py-2 text-xs font-semibold text-slate-700">
+                            <input
+                              type="checkbox"
+                              checked={test.pdf_included !== false}
+                              onChange={(e) =>
+                                updateTestPdfOption(test.layoutKey, {
+                                  pdf_included: e.target.checked,
+                                })
+                              }
+                              className="h-4 w-4"
+                            />
+                            Incluir en PDF
+                          </label>
+
+                          <div className="min-w-[190px]">
+                            <Select
+                              value={test.pdf_page_group || 'none'}
+                              onValueChange={(value) =>
+                                updateTestPageGroup(
+                                  test.layoutKey,
+                                  value === 'none' ? null : value
+                                )
+                              }
+                              disabled={test.pdf_included === false}
+                            >
+                              <SelectTrigger className="bg-white">
+                                <Layers3 className="mr-2 h-4 w-4 text-slate-500" />
+                                <SelectValue placeholder="Grupo de hoja" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="none">
+                                  Sin grupo de hoja
+                                </SelectItem>
+                                {PDF_PAGE_GROUPS.map((group) => (
+                                  <SelectItem key={group} value={group}>
+                                    Misma hoja · Grupo {group}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </div>
+                      </div>
+
+                      {testTargets.length > 0 && (
+                        <div className="rounded-lg border border-slate-200 bg-white p-3">
+                          <div className="mb-2 text-xs font-bold uppercase tracking-wide text-slate-500">
+                            Ubicación de la prueba
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-2 md:grid-cols-[150px_minmax(0,1fr)_110px]">
+                            <Select
+                              value={testMove.position}
+                              onValueChange={(value) =>
+                                setTestMoveSelections((prev) => ({
+                                  ...prev,
+                                  [test.layoutKey]: {
+                                    ...testMove,
+                                    position: value as RelativePosition,
+                                  },
+                                }))
+                              }
+                            >
+                              <SelectTrigger className="bg-white">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem value="before">Arriba de</SelectItem>
+                                <SelectItem value="after">Debajo de</SelectItem>
+                              </SelectContent>
+                            </Select>
+
+                            <Select
+                              value={testMove.targetKey || undefined}
+                              onValueChange={(value) =>
+                                setTestMoveSelections((prev) => ({
+                                  ...prev,
+                                  [test.layoutKey]: {
+                                    ...testMove,
+                                    targetKey: value,
+                                  },
+                                }))
+                              }
+                            >
+                              <SelectTrigger className="bg-white">
+                                <SelectValue placeholder="Seleccione otra prueba" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {testTargets.map((candidate: any) => (
+                                  <SelectItem
+                                    key={candidate.layoutKey}
+                                    value={String(candidate.layoutKey)}
+                                  >
+                                    {candidate.name}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+
+                            <Button
+                              type="button"
+                              variant="outline"
+                              disabled={!testMove.targetKey}
+                              onClick={() => {
+                                moveTestRelative(
+                                  test.layoutKey,
+                                  testMove.targetKey,
+                                  testMove.position
+                                );
+
+                                setTestMoveSelections((prev) => ({
+                                  ...prev,
+                                  [test.layoutKey]: {
+                                    position: testMove.position,
+                                    targetKey: '',
+                                  },
+                                }));
+                              }}
+                            >
+                              Ubicar
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="space-y-3 p-4">
+                      {(test.structure_items || []).map((structureItem: any) => {
+                        if (structureItem.item_type === 'divider') {
+                          return (
+                            <div
+                              key={`divider:${test.layoutKey}:${getStructureItemLayoutId(
+                                structureItem
+                              )}`}
+                              className="flex items-center gap-3 rounded-lg border border-primary/20 bg-primary/5 px-3 py-3"
+                            >
+                              <p className="font-display text-base font-bold text-slate-800 underline decoration-primary/30 underline-offset-4">
+                                {structureItem.texto}
+                              </p>
+                            </div>
+                          );
+                        }
+
+                        const param = structureItem.parameter;
+                        const item =
+                          entryValues[param.id] || emptyEntryValue();
+                        const range = getAppliedRange(
+                          param,
+                          orderDetails.pacientes
+                        );
+                        const status = getStatusPreview(param);
+                        const resultType: ResultType =
+                          param.result_type || 'numeric';
+
+                        const paramMoveKey = `${test.layoutKey}::${param.id}`;
+                        const paramMove =
+                          parameterMoveSelections[paramMoveKey] || {
+                            position: 'after' as RelativePosition,
+                            targetId: '',
+                          };
+
+                        const parameterTargets = parameterItems.filter(
+                          (candidate: any) =>
+                            String(getStructureItemLayoutId(candidate)) !==
+                            String(param.id)
+                        );
+
+                        return (
+                          <div
+                            key={`parameter:${test.layoutKey}:${param.id}`}
+                            className="rounded-lg border border-slate-100 bg-slate-50/50 p-3"
+                          >
+                            <div className="grid grid-cols-12 items-start gap-4">
+                              <div className="col-span-12 md:col-span-4">
+                                <Label className="text-sm font-bold text-slate-700">
+                                  {param.name}
+                                </Label>
+
+                                <div className="mt-1 flex flex-wrap gap-2 font-mono text-[10px] text-slate-500">
+                                  <span>Tipo: {resultType}</span>
+
+                                  {resultType === 'numeric' && (
+                                    <span>Unidad: {param.unit || '—'}</span>
+                                  )}
+
+                                  {resultType === 'numeric' && range && (
+                                    <span>
+                                      Ref: [{range.min} - {range.max}]
+                                    </span>
+                                  )}
                                 </div>
-                                {test.visible_description && test.description?.trim() && (
-                                  <p className="mt-1 text-sm text-slate-600">{test.description}</p>
+                              </div>
+
+                              <div className="col-span-12 md:col-span-5">
+                                {resultType === 'numeric' && (
+                                  <Input
+                                    type="number"
+                                    step="any"
+                                    className="border-slate-200 bg-white"
+                                    placeholder="0.00"
+                                    value={item.value_numeric}
+                                    onChange={(e) =>
+                                      updateEntryValue(
+                                        param.id,
+                                        'value_numeric',
+                                        e.target.value
+                                      )
+                                    }
+                                  />
+                                )}
+
+                                {resultType === 'boolean' && (
+                                  <Select
+                                    value={item.value_boolean}
+                                    onValueChange={(value) =>
+                                      updateEntryValue(
+                                        param.id,
+                                        'value_boolean',
+                                        value as '' | 'true' | 'false'
+                                      )
+                                    }
+                                  >
+                                    <SelectTrigger className="bg-white">
+                                      <SelectValue placeholder="Seleccione un valor" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="true">
+                                        {param.bool_true_label || 'Positivo'}
+                                      </SelectItem>
+                                      <SelectItem value="false">
+                                        {param.bool_false_label || 'Negativo'}
+                                      </SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                )}
+
+                                {resultType === 'text' && (
+                                  <>
+                                    <Textarea
+                                      className="min-h-[90px] border-slate-200 bg-white"
+                                      placeholder={
+                                        param.valor_default
+                                          ? 'Valor precargado editable...'
+                                          : 'Ingrese el resultado...'
+                                      }
+                                      value={item.value_text}
+                                      onChange={(e) =>
+                                        updateEntryValue(
+                                          param.id,
+                                          'value_text',
+                                          e.target.value
+                                        )
+                                      }
+                                    />
+
+                                    {param.valor_default && (
+                                      <p className="mt-1 text-[11px] text-slate-500">
+                                        Valor por defecto:{' '}
+                                        <span className="font-medium">
+                                          {param.valor_default}
+                                        </span>
+                                      </p>
+                                    )}
+                                  </>
+                                )}
+
+                                {param.allow_observation && (
+                                  <div className="mt-3">
+                                    <Label className="text-xs font-semibold text-slate-600">
+                                      Observación
+                                    </Label>
+
+                                    <Textarea
+                                      className="mt-1 min-h-[70px] border-slate-200 bg-white"
+                                      placeholder="Observación opcional..."
+                                      value={item.observation}
+                                      onChange={(e) =>
+                                        updateEntryValue(
+                                          param.id,
+                                          'observation',
+                                          e.target.value
+                                        )
+                                      }
+                                    />
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="col-span-12 md:col-span-3">
+                                {status && (
+                                  <Badge
+                                    className={`w-full justify-center ${
+                                      status === 'normal'
+                                        ? 'bg-emerald-500'
+                                        : status === 'high'
+                                        ? 'bg-rose-500'
+                                        : status === 'low'
+                                        ? 'bg-amber-500'
+                                        : status === 'positive'
+                                        ? 'bg-rose-500'
+                                        : status === 'negative'
+                                        ? 'bg-emerald-500'
+                                        : 'bg-slate-600'
+                                    } border-0 text-white shadow-sm`}
+                                  >
+                                    {status === 'normal' && 'NORMAL'}
+                                    {status === 'high' && 'ALTO ↑'}
+                                    {status === 'low' && 'BAJO ↓'}
+                                    {status === 'positive' &&
+                                      (param.bool_true_label || 'POSITIVO')}
+                                    {status === 'negative' &&
+                                      (param.bool_false_label || 'NEGATIVO')}
+                                    {status === 'text' && 'TEXTO'}
+                                  </Badge>
                                 )}
                               </div>
                             </div>
 
-                            <div className="flex flex-wrap items-center gap-3">
-                              <label className="flex cursor-pointer items-center gap-2 rounded-lg border bg-white px-3 py-2 text-xs font-semibold text-slate-700">
-                                <input
-                                  type="checkbox"
-                                  checked={test.pdf_included !== false}
-                                  onChange={(e) =>
-                                    updateTestPdfOption(test.layoutKey, {
-                                      pdf_included: e.target.checked,
-                                    })
-                                  }
-                                  className="h-4 w-4"
-                                />
-                                Incluir en PDF
-                              </label>
+                            {parameterTargets.length > 0 && (
+                              <div className="mt-3 rounded-lg border border-dashed border-slate-300 bg-white/80 p-3">
+                                <div className="mb-2 text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                                  Ubicación del parámetro
+                                </div>
 
-                              <div className="min-w-[190px]">
-                                <Select
-                                  value={test.pdf_page_group || 'none'}
-                                  onValueChange={(value) =>
-                                    updateTestPageGroup(
-                                      test.layoutKey,
-                                      value === 'none' ? null : value
-                                    )
-                                  }
-                                  disabled={test.pdf_included === false}
-                                >
-                                  <SelectTrigger className="bg-white">
-                                    <Layers3 className="mr-2 h-4 w-4 text-slate-500" />
-                                    <SelectValue placeholder="Grupo de hoja" />
-                                  </SelectTrigger>
-                                  <SelectContent>
-                                    <SelectItem value="none">Sin grupo de hoja</SelectItem>
-                                    {PDF_PAGE_GROUPS.map((group) => (
-                                      <SelectItem key={group} value={group}>
-                                        Misma hoja · Grupo {group}
+                                <div className="grid grid-cols-1 gap-2 md:grid-cols-[150px_minmax(0,1fr)_110px]">
+                                  <Select
+                                    value={paramMove.position}
+                                    onValueChange={(value) =>
+                                      setParameterMoveSelections((prev) => ({
+                                        ...prev,
+                                        [paramMoveKey]: {
+                                          ...paramMove,
+                                          position:
+                                            value as RelativePosition,
+                                        },
+                                      }))
+                                    }
+                                  >
+                                    <SelectTrigger className="bg-white">
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="before">
+                                        Arriba de
                                       </SelectItem>
-                                    ))}
-                                  </SelectContent>
-                                </Select>
-                              </div>
-                            </div>
-                          </div>
+                                      <SelectItem value="after">
+                                        Debajo de
+                                      </SelectItem>
+                                    </SelectContent>
+                                  </Select>
 
-                          <div className="p-4">
-                            <SortableContext
-                              items={(test.structure_items || []).map(
-                                (structureItem: any) =>
-                                  `item:${test.layoutKey}::${getStructureItemLayoutId(structureItem)}`
-                              )}
-                              strategy={verticalListSortingStrategy}
-                            >
-                              <div className="space-y-3">
-                                {(test.structure_items || []).map((structureItem: any) => {
-                                  const sortableId = `item:${test.layoutKey}::${getStructureItemLayoutId(
-                                    structureItem
-                                  )}`;
-
-                                  if (structureItem.item_type === 'divider') {
-                                    return (
-                                      <SortableShell key={sortableId} id={sortableId}>
-                                        {(itemHandleProps, draggingItem) => (
-                                          <div
-                                            className={`flex items-center gap-3 rounded-lg border border-primary/20 bg-primary/5 px-3 py-3 ${
-                                              draggingItem ? 'shadow-md ring-2 ring-primary/20' : ''
-                                            }`}
+                                  <Select
+                                    value={paramMove.targetId || undefined}
+                                    onValueChange={(value) =>
+                                      setParameterMoveSelections((prev) => ({
+                                        ...prev,
+                                        [paramMoveKey]: {
+                                          ...paramMove,
+                                          targetId: value,
+                                        },
+                                      }))
+                                    }
+                                  >
+                                    <SelectTrigger className="bg-white">
+                                      <SelectValue placeholder="Seleccione otro parámetro" />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {parameterTargets.map(
+                                        (candidate: any) => (
+                                          <SelectItem
+                                            key={getStructureItemLayoutId(
+                                              candidate
+                                            )}
+                                            value={getStructureItemLayoutId(
+                                              candidate
+                                            )}
                                           >
-                                            <button
-                                              type="button"
-                                              {...itemHandleProps}
-                                              className="cursor-grab rounded-md border bg-white p-2 text-slate-500 active:cursor-grabbing"
-                                              title="Arrastrar divisor"
-                                            >
-                                              <GripVertical className="h-4 w-4" />
-                                            </button>
-                                            <p className="font-display text-base font-bold text-slate-800 underline decoration-primary/30 underline-offset-4">
-                                              {structureItem.texto}
-                                            </p>
-                                          </div>
-                                        )}
-                                      </SortableShell>
-                                    );
-                                  }
-
-                                  const param = structureItem.parameter;
-                                  const item = entryValues[param.id] || emptyEntryValue();
-                                  const range = getAppliedRange(param, orderDetails.pacientes);
-                                  const status = getStatusPreview(param);
-                                  const resultType: ResultType = param.result_type || 'numeric';
-
-                                  return (
-                                    <SortableShell key={sortableId} id={sortableId}>
-                                      {(itemHandleProps, draggingItem) => (
-                                        <div
-                                          className={`grid grid-cols-12 items-start gap-4 rounded-lg border border-slate-100 bg-slate-50/50 p-3 ${
-                                            draggingItem ? 'shadow-md ring-2 ring-primary/20' : ''
-                                          }`}
-                                        >
-                                          <div className="col-span-12 flex gap-3 md:col-span-4">
-                                            <button
-                                              type="button"
-                                              {...itemHandleProps}
-                                              className="h-fit cursor-grab rounded-md border bg-white p-2 text-slate-500 active:cursor-grabbing"
-                                              title="Arrastrar parámetro"
-                                            >
-                                              <GripVertical className="h-4 w-4" />
-                                            </button>
-                                            <div>
-                                              <Label className="text-sm font-bold text-slate-700">
-                                                {param.name}
-                                              </Label>
-                                              <div className="mt-1 flex flex-wrap gap-2 font-mono text-[10px] text-slate-500">
-                                                <span>Tipo: {resultType}</span>
-                                                {resultType === 'numeric' && (
-                                                  <span>Unidad: {param.unit || '—'}</span>
-                                                )}
-                                                {resultType === 'numeric' && range && (
-                                                  <span>Ref: [{range.min} - {range.max}]</span>
-                                                )}
-                                              </div>
-                                            </div>
-                                          </div>
-
-                                          <div className="col-span-12 md:col-span-5">
-                                            {resultType === 'numeric' && (
-                                              <Input
-                                                type="number"
-                                                step="any"
-                                                className="border-slate-200 bg-white"
-                                                placeholder="0.00"
-                                                value={item.value_numeric}
-                                                onChange={(e) =>
-                                                  updateEntryValue(
-                                                    param.id,
-                                                    'value_numeric',
-                                                    e.target.value
-                                                  )
-                                                }
-                                              />
-                                            )}
-
-                                            {resultType === 'boolean' && (
-                                              <Select
-                                                value={item.value_boolean}
-                                                onValueChange={(value) =>
-                                                  updateEntryValue(
-                                                    param.id,
-                                                    'value_boolean',
-                                                    value as '' | 'true' | 'false'
-                                                  )
-                                                }
-                                              >
-                                                <SelectTrigger className="bg-white">
-                                                  <SelectValue placeholder="Seleccione un valor" />
-                                                </SelectTrigger>
-                                                <SelectContent>
-                                                  <SelectItem value="true">
-                                                    {param.bool_true_label || 'Positivo'}
-                                                  </SelectItem>
-                                                  <SelectItem value="false">
-                                                    {param.bool_false_label || 'Negativo'}
-                                                  </SelectItem>
-                                                </SelectContent>
-                                              </Select>
-                                            )}
-
-                                            {resultType === 'text' && (
-                                              <>
-                                                <Textarea
-                                                  className="min-h-[90px] border-slate-200 bg-white"
-                                                  placeholder={
-                                                    param.valor_default
-                                                      ? 'Valor precargado editable...'
-                                                      : 'Ingrese el resultado...'
-                                                  }
-                                                  value={item.value_text}
-                                                  onChange={(e) =>
-                                                    updateEntryValue(
-                                                      param.id,
-                                                      'value_text',
-                                                      e.target.value
-                                                    )
-                                                  }
-                                                />
-                                                {param.valor_default && (
-                                                  <p className="mt-1 text-[11px] text-slate-500">
-                                                    Valor por defecto:{' '}
-                                                    <span className="font-medium">
-                                                      {param.valor_default}
-                                                    </span>
-                                                  </p>
-                                                )}
-                                              </>
-                                            )}
-
-                                            {param.allow_observation && (
-                                              <div className="mt-3">
-                                                <Label className="text-xs font-semibold text-slate-600">
-                                                  Observación
-                                                </Label>
-                                                <Textarea
-                                                  className="mt-1 min-h-[70px] border-slate-200 bg-white"
-                                                  placeholder="Observación opcional..."
-                                                  value={item.observation}
-                                                  onChange={(e) =>
-                                                    updateEntryValue(
-                                                      param.id,
-                                                      'observation',
-                                                      e.target.value
-                                                    )
-                                                  }
-                                                />
-                                              </div>
-                                            )}
-                                          </div>
-
-                                          <div className="col-span-12 md:col-span-3">
-                                            {status && (
-                                              <Badge
-                                                className={`w-full justify-center ${
-                                                  status === 'normal'
-                                                    ? 'bg-emerald-500'
-                                                    : status === 'high'
-                                                    ? 'bg-rose-500'
-                                                    : status === 'low'
-                                                    ? 'bg-amber-500'
-                                                    : status === 'positive'
-                                                    ? 'bg-rose-500'
-                                                    : status === 'negative'
-                                                    ? 'bg-emerald-500'
-                                                    : 'bg-slate-600'
-                                                } border-0 text-white shadow-sm`}
-                                              >
-                                                {status === 'normal' && 'NORMAL'}
-                                                {status === 'high' && 'ALTO ↑'}
-                                                {status === 'low' && 'BAJO ↓'}
-                                                {status === 'positive' &&
-                                                  (param.bool_true_label || 'POSITIVO')}
-                                                {status === 'negative' &&
-                                                  (param.bool_false_label || 'NEGATIVO')}
-                                                {status === 'text' && 'TEXTO'}
-                                              </Badge>
-                                            )}
-                                          </div>
-                                        </div>
+                                            {candidate.parameter?.name ||
+                                              'Parámetro'}
+                                          </SelectItem>
+                                        )
                                       )}
-                                    </SortableShell>
-                                  );
-                                })}
+                                    </SelectContent>
+                                  </Select>
+
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    disabled={!paramMove.targetId}
+                                    onClick={() => {
+                                      moveParameterRelative(
+                                        test.layoutKey,
+                                        param.id,
+                                        paramMove.targetId,
+                                        paramMove.position
+                                      );
+
+                                      setParameterMoveSelections((prev) => ({
+                                        ...prev,
+                                        [paramMoveKey]: {
+                                          position: paramMove.position,
+                                          targetId: '',
+                                        },
+                                      }));
+                                    }}
+                                  >
+                                    Ubicar
+                                  </Button>
+                                </div>
                               </div>
-                            </SortableContext>
+                            )}
                           </div>
-                        </div>
-                      )}
-                    </SortableShell>
-                  ))}
-                </div>
-              </SortableContext>
-            </DndContext>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
 
             <Button
               onClick={handleSaveResults}

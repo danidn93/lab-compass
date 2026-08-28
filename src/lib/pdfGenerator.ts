@@ -158,13 +158,13 @@ function normalizeExamDescription(
 
 function buildGroupedTestKey(
   name: any,
-  description: any,
-  visibleDescription: boolean | null | undefined = true
+  _description?: any,
+  _visibleDescription: boolean | null | undefined = true
 ) {
-  return `${normalizeExamName(name)}|||${normalizeExamDescription(
-    description,
-    visibleDescription
-  )}`;
+  // Las pruebas con el mismo nombre se consideran una sola prueba lógica.
+  // ResultsPage consolida sus parámetros y el generador debe resolverlas
+  // exactamente con la misma clave.
+  return normalizeExamName(name);
 }
 
 function normalizeImageData(data?: string | null) {
