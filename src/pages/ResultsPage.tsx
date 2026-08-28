@@ -1,4 +1,4 @@
-import React, { ReactNode, useEffect, useMemo, useState } from 'react';
+import React, { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -605,6 +605,13 @@ export default function ResultsPage() {
   const [downloadingOrderId, setDownloadingOrderId] = useState<string | null>(null);
   const [resultDate, setResultDate] = useState<string>(() => new Date().toISOString().split('T')[0]);
 
+  // Vista previa real del PDF (sin guardar en Supabase)
+  const [pdfPreviewConfig, setPdfPreviewConfig] = useState<any>(null);
+  const [pdfPreviewUrl, setPdfPreviewUrl] = useState<string | null>(null);
+  const [pdfPreviewLoading, setPdfPreviewLoading] = useState(false);
+  const [pdfPreviewError, setPdfPreviewError] = useState<string | null>(null);
+  const pdfPreviewUrlRef = useRef<string | null>(null);
+
   const [search, setSearch] = useState('');
   const [historyOpen, setHistoryOpen] = useState(false);
 
@@ -865,41 +872,52 @@ export default function ResultsPage() {
       setEntryValues({});
       setResultDate(new Date().toISOString().split('T')[0]);
 
-      const { data: details, error } = await supabase
-        .from('orden_detalle')
-        .select(`
-          id,
-          test_id,
-          pruebas (
+      const [
+        { data: details, error },
+        { data: labConfig, error: labConfigError },
+      ] = await Promise.all([
+        supabase
+          .from('orden_detalle')
+          .select(`
             id,
-            name,
-            description,
-            visible_description,
-            parametros_prueba (
+            test_id,
+            pruebas (
               id,
               name,
-              unit,
-              result_type,
-              bool_true_label,
-              bool_false_label,
-              allow_observation,
-              sort_order,
-              valor_default,
-              valor_default_boolean,
-              rangos_referencia (*)
-            ),
-            parametros_prueba_divisores (
-              id,
-              texto,
-              sort_order,
-              activo
+              description,
+              visible_description,
+              parametros_prueba (
+                id,
+                name,
+                unit,
+                result_type,
+                bool_true_label,
+                bool_false_label,
+                allow_observation,
+                sort_order,
+                valor_default,
+                valor_default_boolean,
+                rangos_referencia (*)
+              ),
+              parametros_prueba_divisores (
+                id,
+                texto,
+                sort_order,
+                activo
+              )
             )
-          )
-        `)
-        .eq('order_id', order.id)
-        .order('id', { ascending: true });
+          `)
+          .eq('order_id', order.id)
+          .order('id', { ascending: true }),
+        supabase
+          .from('configuracion_laboratorio')
+          .select('*')
+          .maybeSingle(),
+      ]);
 
       if (error) throw error;
+      if (labConfigError) throw labConfigError;
+      if (!labConfig) throw new Error('No existe la configuración del laboratorio');
 
       const normalizedTests = applySavedPdfLayoutToTests(
         groupTestsByName(details || []),
@@ -933,6 +951,8 @@ export default function ResultsPage() {
       });
 
       setEntryValues(initialValues);
+      setPdfPreviewConfig(labConfig);
+      setPdfPreviewError(null);
       setOrderDetails({ ...order, tests: normalizedTests });
       setEntryDialogOpen(true);
     } catch (error: any) {
@@ -1017,6 +1037,210 @@ export default function ResultsPage() {
 
     return true;
   };
+
+  const buildLivePdfPreviewPayload = () => {
+    if (!orderDetails || !pdfPreviewConfig) return null;
+
+    const pdfConfig: PdfLabConfig = {
+      name: pdfPreviewConfig.name || 'LABORATORIO CLÍNICO',
+      owner: pdfPreviewConfig.owner || '',
+      address: pdfPreviewConfig.address || '',
+      ruc: pdfPreviewConfig.ruc || '',
+      healthRegistry: pdfPreviewConfig.health_registry || '',
+      phone: pdfPreviewConfig.phone || '',
+      schedule: pdfPreviewConfig.schedule || '',
+      logo: pdfPreviewConfig.logo || '',
+      firma: pdfPreviewConfig.firma || '',
+      sello: pdfPreviewConfig.sello || '',
+    };
+
+    const pdfPatient: PdfPatient = {
+      name: orderDetails.pacientes?.name || '',
+      cedula: orderDetails.pacientes?.cedula || '',
+      phone: orderDetails.pacientes?.phone || '',
+      sex: orderDetails.pacientes?.sex === 'F' ? 'F' : 'M',
+      birth_date: orderDetails.pacientes?.birth_date || null,
+    };
+
+    const pdfOrder: PdfOrder = {
+      code: orderDetails.code || '',
+      accessKey: orderDetails.access_key || '',
+      date: resultDate || orderDetails.created_at || '',
+      created_at: resultDate || orderDetails.created_at || null,
+    };
+
+    const visibleTests = compactTestsByPageGroup(orderDetails.tests || []).filter(
+      (test: any) => test.pdf_included !== false
+    );
+
+    const orderTests = visibleTests.map((test: any) => ({
+      id: String(test.id || ''),
+      layoutKey: String(test.layoutKey || ''),
+      name: test.name || '',
+      description: test.visible_description === false ? '' : test.description || '',
+      visible_description: test.visible_description ?? true,
+      pageGroup: test.pdf_page_group || null,
+    }));
+
+    const orderResults = visibleTests.map((test: any, testIndex: number) => {
+      const details: any[] = [];
+
+      for (const structureItem of test.structure_items || []) {
+        if (structureItem.item_type === 'divider') {
+          details.push({
+            id: `divider-${structureItem.id}`,
+            item_type: 'divider',
+            texto: structureItem.texto || '',
+            sort_order: structureItem.sort_order ?? null,
+          });
+          continue;
+        }
+
+        const param = structureItem.parameter;
+        if (!param) continue;
+
+        const entryItem = entryValues[param.id] || emptyEntryValue();
+        if (isEntryValueEmpty(entryItem)) continue;
+
+        const resultType: ResultType = param.result_type || 'numeric';
+        const range =
+          resultType === 'numeric'
+            ? getAppliedRange(param, orderDetails.pacientes)
+            : null;
+
+        let value = '';
+        let status: ResultStatus = null;
+        let appliedRangeMin: number | null = null;
+        let appliedRangeMax: number | null = null;
+
+        if (resultType === 'numeric') {
+          const raw = String(entryItem.value_numeric ?? '').trim();
+          if (raw !== '') {
+            const numericValue = Number(raw);
+            if (Number.isFinite(numericValue)) {
+              value = raw;
+              status = classifyNumericValue(numericValue, range);
+              appliedRangeMin = range?.min ?? null;
+              appliedRangeMax = range?.max ?? null;
+            }
+          }
+        } else if (resultType === 'boolean') {
+          if (entryItem.value_boolean !== '') {
+            const isTrue = entryItem.value_boolean === 'true';
+            value = isTrue
+              ? param.bool_true_label || 'Positivo'
+              : param.bool_false_label || 'Negativo';
+            status = isTrue ? 'positive' : 'negative';
+          }
+        } else {
+          value = String(entryItem.value_text ?? '').trim();
+          if (value) status = 'text';
+        }
+
+        const observation = param.allow_observation
+          ? String(entryItem.observation ?? '').trim()
+          : '';
+
+        if (!value && !observation) continue;
+
+        details.push({
+          id: `preview-${testIndex}-${param.id}`,
+          item_type: 'parameter',
+          parameterId: param.id,
+          parameterName: param.name || 'Resultado',
+          sort_order: param.sort_order ?? null,
+          value,
+          appliedRangeMin,
+          appliedRangeMax,
+          unit: resultType === 'numeric' ? param.unit || '' : '',
+          status: status || 'normal',
+          observation,
+          resultType,
+        });
+      }
+
+      return {
+        id: `preview-result-${testIndex}`,
+        testId: String(test.id || ''),
+        layoutKey: String(test.layoutKey || ''),
+        testName: test.name || '',
+        testDescription:
+          test.visible_description === false ? '' : test.description || '',
+        visible_description: test.visible_description ?? true,
+        notes: '',
+        date: resultDate || null,
+        details,
+        pageGroup: test.pdf_page_group || null,
+      } as PdfOrderResult & { pageGroup?: string | null };
+    });
+
+    return {
+      pdfConfig,
+      pdfPatient,
+      pdfOrder,
+      orderTests,
+      orderResults,
+    };
+  };
+
+  const replacePdfPreviewUrl = (blob: Blob) => {
+    const nextUrl = URL.createObjectURL(blob);
+
+    if (pdfPreviewUrlRef.current) {
+      URL.revokeObjectURL(pdfPreviewUrlRef.current);
+    }
+
+    pdfPreviewUrlRef.current = nextUrl;
+    setPdfPreviewUrl(nextUrl);
+  };
+
+  useEffect(() => {
+    if (!entryDialogOpen || !orderDetails || !pdfPreviewConfig) return;
+
+    const timer = window.setTimeout(() => {
+      try {
+        setPdfPreviewLoading(true);
+        setPdfPreviewError(null);
+
+        const payload = buildLivePdfPreviewPayload();
+        if (!payload) return;
+
+        const blob = generateResultsPDF(
+          payload.pdfOrder,
+          payload.pdfPatient,
+          payload.orderTests,
+          payload.orderResults,
+          payload.pdfConfig,
+          { autoDownload: false }
+        );
+
+        replacePdfPreviewUrl(blob);
+      } catch (error: any) {
+        setPdfPreviewError(
+          error?.message || 'No se pudo generar la vista previa del PDF'
+        );
+      } finally {
+        setPdfPreviewLoading(false);
+      }
+    }, 400);
+
+    return () => window.clearTimeout(timer);
+  }, [
+    entryDialogOpen,
+    orderDetails,
+    entryValues,
+    resultDate,
+    pdfPreviewConfig,
+  ]);
+
+  useEffect(() => {
+    return () => {
+      if (pdfPreviewUrlRef.current) {
+        URL.revokeObjectURL(pdfPreviewUrlRef.current);
+        pdfPreviewUrlRef.current = null;
+      }
+    };
+  }, []);
 
   const buildPdfPayloadFromOrderData = (configData: any, orderData: any) => {
     const pdfConfig: PdfLabConfig = {
@@ -2031,8 +2255,8 @@ export default function ResultsPage() {
           }
         }}
       >
-        <DialogContent className="max-w-6xl max-h-[92vh] overflow-y-auto">
-          <DialogHeader>
+        <DialogContent className="flex h-[96vh] w-[98vw] max-w-[1800px] flex-col overflow-hidden p-0">
+          <DialogHeader className="shrink-0 border-b bg-white px-6 pb-4 pt-6">
             <DialogTitle className="font-display text-xl text-primary">
               Ingreso Técnico de Resultados
             </DialogTitle>
@@ -2049,7 +2273,9 @@ export default function ResultsPage() {
             )}
           </DialogHeader>
 
-          <div className="space-y-6 mt-4">
+          <div className="grid min-h-0 flex-1 grid-cols-1 gap-0 xl:grid-cols-[minmax(0,1.12fr)_minmax(520px,0.88fr)]">
+            <div className="min-h-0 overflow-y-auto px-6 py-5">
+          <div className="space-y-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 p-4 rounded-xl border bg-slate-50/60">
               <div className="md:col-span-1">
                 <Label className="text-sm font-semibold flex items-center gap-2">
@@ -2396,6 +2622,59 @@ export default function ResultsPage() {
                 'Validar y Finalizar Orden'
               )}
             </Button>
+          </div>
+            </div>
+
+            <aside className="min-h-[680px] border-t bg-slate-100 xl:min-h-0 xl:border-l xl:border-t-0">
+              <div className="flex h-full min-h-[680px] flex-col xl:min-h-0">
+                <div className="flex shrink-0 items-center justify-between border-b bg-white px-4 py-3">
+                  <div>
+                    <p className="font-semibold text-slate-800">
+                      Vista previa del PDF
+                    </p>
+                    <p className="text-xs text-muted-foreground">
+                      Se actualiza automáticamente antes de guardar
+                    </p>
+                  </div>
+
+                  {pdfPreviewLoading && (
+                    <div className="flex items-center gap-2 text-xs font-medium text-primary">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Actualizando
+                    </div>
+                  )}
+                </div>
+
+                <div className="relative min-h-0 flex-1 p-3">
+                  {pdfPreviewError ? (
+                    <div className="flex h-full min-h-[620px] items-center justify-center rounded-lg border border-rose-200 bg-white p-6 text-center xl:min-h-0">
+                      <div>
+                        <p className="font-semibold text-rose-600">
+                          No se pudo generar la vista previa
+                        </p>
+                        <p className="mt-2 text-sm text-slate-500">
+                          {pdfPreviewError}
+                        </p>
+                      </div>
+                    </div>
+                  ) : pdfPreviewUrl ? (
+                    <iframe
+                      key={pdfPreviewUrl}
+                      src={`${pdfPreviewUrl}#toolbar=1&navpanes=0&scrollbar=1&view=FitH`}
+                      title="Vista previa del PDF de resultados"
+                      className="h-full min-h-[620px] w-full rounded-lg border bg-white shadow-sm xl:min-h-0"
+                    />
+                  ) : (
+                    <div className="flex h-full min-h-[620px] items-center justify-center rounded-lg border bg-white text-sm text-muted-foreground xl:min-h-0">
+                      <div className="flex items-center gap-2">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Generando vista previa...
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </aside>
           </div>
         </DialogContent>
       </Dialog>
