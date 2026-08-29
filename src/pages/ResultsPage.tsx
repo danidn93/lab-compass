@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -18,10 +18,29 @@ import {
   ChevronDown,
   ChevronUp,
   MessageCircle,
+  GripVertical,
   Layers3,
   FileStack,
 } from 'lucide-react';
 import { toast } from 'sonner';
+
+import {
+  DndContext,
+  DragEndEvent,
+  KeyboardSensor,
+  PointerSensor,
+  closestCenter,
+  useSensor,
+  useSensors,
+} from '@dnd-kit/core';
+import {
+  SortableContext,
+  arrayMove,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
 
 import { Textarea } from '@/components/ui/textarea';
@@ -77,6 +96,41 @@ function getPdfDetailLayoutId(item: any): string {
     return String(item?.id || '').replace(/^divider-/, '');
   }
   return String(item?.parameterId || item?.id || '');
+}
+
+function SortableShell({
+  id,
+  children,
+  disabled = false,
+  className = '',
+}: {
+  id: string;
+  children: (handleProps: any, dragging: boolean) => ReactNode;
+  disabled?: boolean;
+  className?: string;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id, disabled });
+
+  const style: React.CSSProperties = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 50 : undefined,
+    opacity: isDragging ? 0.72 : 1,
+    position: 'relative',
+  };
+
+  return (
+    <div ref={setNodeRef} style={style} className={className}>
+      {children({ ...attributes, ...listeners }, isDragging)}
+    </div>
+  );
 }
 
 interface DividerDisplayItem {
@@ -576,9 +630,10 @@ export default function ResultsPage() {
     Record<string, { position: RelativePosition; targetKey: string }>
   >({});
 
-  const [parameterMoveSelections, setParameterMoveSelections] = useState<
-    Record<string, { position: RelativePosition; targetId: string }>
-  >({});
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+  );
 
 
   useEffect(() => {
@@ -908,13 +963,13 @@ export default function ResultsPage() {
     });
   };
 
-  const moveParameterRelative = (
-    layoutKey: string,
-    parameterId: string,
-    targetParameterId: string,
-    position: RelativePosition
-  ) => {
-    if (!targetParameterId || parameterId === targetParameterId) return;
+  const handleParameterDragEnd = (layoutKey: string, event: DragEndEvent) => {
+    const activeId = String(event.active.id).replace(/^item:/, '');
+    const overId = event.over
+      ? String(event.over.id).replace(/^item:/, '')
+      : '';
+
+    if (!overId || activeId === overId) return;
 
     setOrderDetails((prev: any) => {
       if (!prev) return prev;
@@ -929,28 +984,20 @@ export default function ResultsPage() {
       const test = tests[testIndex];
       const structureItems = [...(test.structure_items || [])];
 
-      const fromIndex = structureItems.findIndex(
+      const oldIndex = structureItems.findIndex(
         (item: any) =>
-          item.item_type === 'parameter' &&
-          getStructureItemLayoutId(item) === String(parameterId)
+          getStructureItemLayoutId(item) === activeId
+      );
+      const newIndex = structureItems.findIndex(
+        (item: any) =>
+          getStructureItemLayoutId(item) === overId
       );
 
-      const targetIndex = structureItems.findIndex(
-        (item: any) =>
-          item.item_type === 'parameter' &&
-          getStructureItemLayoutId(item) === String(targetParameterId)
-      );
-
-      if (fromIndex < 0 || targetIndex < 0) return prev;
+      if (oldIndex < 0 || newIndex < 0) return prev;
 
       tests[testIndex] = {
         ...test,
-        structure_items: moveItemRelative(
-          structureItems,
-          fromIndex,
-          targetIndex,
-          position
-        ),
+        structure_items: arrayMove(structureItems, oldIndex, newIndex),
       };
 
       return {
@@ -2414,9 +2461,6 @@ export default function ResultsPage() {
                     String(candidate.layoutKey) !== String(test.layoutKey)
                 );
 
-                const parameterItems = (test.structure_items || []).filter(
-                  (item: any) => item.item_type === 'parameter'
-                );
 
                 return (
                   <div
@@ -2575,20 +2619,53 @@ export default function ResultsPage() {
                       )}
                     </div>
 
-                    <div className="space-y-3 p-4">
-                      {(test.structure_items || []).map((structureItem: any) => {
+                    <DndContext
+                      sensors={sensors}
+                      collisionDetection={closestCenter}
+                      onDragEnd={(event) =>
+                        handleParameterDragEnd(test.layoutKey, event)
+                      }
+                    >
+                      <SortableContext
+                        items={(test.structure_items || []).map(
+                          (item: any) =>
+                            `item:${getStructureItemLayoutId(item)}`
+                        )}
+                        strategy={verticalListSortingStrategy}
+                      >
+                        <div className="space-y-3 p-4">
+                          {(test.structure_items || []).map((structureItem: any) => {
+                            const sortableId = `item:${getStructureItemLayoutId(
+                              structureItem
+                            )}`;
                         if (structureItem.item_type === 'divider') {
                           return (
-                            <div
+                            <SortableShell
                               key={`divider:${test.layoutKey}:${getStructureItemLayoutId(
                                 structureItem
                               )}`}
-                              className="flex items-center gap-3 rounded-lg border border-primary/20 bg-primary/5 px-3 py-3"
+                              id={sortableId}
                             >
-                              <p className="font-display text-base font-bold text-slate-800 underline decoration-primary/30 underline-offset-4">
-                                {structureItem.texto}
-                              </p>
-                            </div>
+                              {(handleProps, dragging) => (
+                                <div
+                                  className={`flex items-center gap-3 rounded-lg border border-primary/20 bg-primary/5 px-3 py-3 ${
+                                    dragging ? 'shadow-lg ring-2 ring-primary/20' : ''
+                                  }`}
+                                >
+                                  <button
+                                    type="button"
+                                    {...handleProps}
+                                    className="cursor-grab touch-none rounded-md p-1 text-slate-400 hover:bg-white hover:text-primary active:cursor-grabbing"
+                                    title="Arrastrar divisor"
+                                  >
+                                    <GripVertical className="h-5 w-5" />
+                                  </button>
+                                  <p className="font-display text-base font-bold text-slate-800 underline decoration-primary/30 underline-offset-4">
+                                    {structureItem.texto}
+                                  </p>
+                                </div>
+                              )}
+                            </SortableShell>
                           );
                         }
 
@@ -2603,25 +2680,32 @@ export default function ResultsPage() {
                         const resultType: ResultType =
                           param.result_type || 'numeric';
 
-                        const paramMoveKey = `${test.layoutKey}::${param.id}`;
-                        const paramMove =
-                          parameterMoveSelections[paramMoveKey] || {
-                            position: 'after' as RelativePosition,
-                            targetId: '',
-                          };
-
-                        const parameterTargets = parameterItems.filter(
-                          (candidate: any) =>
-                            String(getStructureItemLayoutId(candidate)) !==
-                            String(param.id)
-                        );
-
                         return (
-                          <div
+                          <SortableShell
                             key={`parameter:${test.layoutKey}:${param.id}`}
-                            className="rounded-lg border border-slate-100 bg-slate-50/50 p-3"
+                            id={sortableId}
                           >
-                            <div className="grid grid-cols-12 items-start gap-4">
+                            {(handleProps, dragging) => (
+                              <div
+                                className={`rounded-lg border border-slate-100 bg-slate-50/50 p-3 ${
+                                  dragging ? 'shadow-lg ring-2 ring-primary/20' : ''
+                                }`}
+                              >
+                                <div className="mb-2 flex items-center gap-2">
+                                  <button
+                                    type="button"
+                                    {...handleProps}
+                                    className="cursor-grab touch-none rounded-md p-1 text-slate-400 hover:bg-white hover:text-primary active:cursor-grabbing"
+                                    title="Arrastrar parámetro"
+                                  >
+                                    <GripVertical className="h-5 w-5" />
+                                  </button>
+                                  <span className="text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                                    Arrastra para ordenar
+                                  </span>
+                                </div>
+
+                                <div className="grid grid-cols-12 items-start gap-4">
                               <div className="col-span-12 md:col-span-4">
                                 <Label className="text-sm font-bold text-slate-700">
                                   {param.name}
@@ -2767,103 +2851,14 @@ export default function ResultsPage() {
                               </div>
                             </div>
 
-                            {parameterTargets.length > 0 && (
-                              <div className="mt-3 rounded-lg border border-dashed border-slate-300 bg-white/80 p-3">
-                                <div className="mb-2 text-[11px] font-bold uppercase tracking-wide text-slate-500">
-                                  Ubicación del parámetro
-                                </div>
-
-                                <div className="grid grid-cols-1 gap-2 md:grid-cols-[150px_minmax(0,1fr)_110px]">
-                                  <Select
-                                    value={paramMove.position}
-                                    onValueChange={(value) =>
-                                      setParameterMoveSelections((prev) => ({
-                                        ...prev,
-                                        [paramMoveKey]: {
-                                          ...paramMove,
-                                          position:
-                                            value as RelativePosition,
-                                        },
-                                      }))
-                                    }
-                                  >
-                                    <SelectTrigger className="bg-white">
-                                      <SelectValue />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                      <SelectItem value="before">
-                                        Arriba de
-                                      </SelectItem>
-                                      <SelectItem value="after">
-                                        Debajo de
-                                      </SelectItem>
-                                    </SelectContent>
-                                  </Select>
-
-                                  <Select
-                                    value={paramMove.targetId || undefined}
-                                    onValueChange={(value) =>
-                                      setParameterMoveSelections((prev) => ({
-                                        ...prev,
-                                        [paramMoveKey]: {
-                                          ...paramMove,
-                                          targetId: value,
-                                        },
-                                      }))
-                                    }
-                                  >
-                                    <SelectTrigger className="bg-white">
-                                      <SelectValue placeholder="Seleccione otro parámetro" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                      {parameterTargets.map(
-                                        (candidate: any) => (
-                                          <SelectItem
-                                            key={getStructureItemLayoutId(
-                                              candidate
-                                            )}
-                                            value={getStructureItemLayoutId(
-                                              candidate
-                                            )}
-                                          >
-                                            {candidate.parameter?.name ||
-                                              'Parámetro'}
-                                          </SelectItem>
-                                        )
-                                      )}
-                                    </SelectContent>
-                                  </Select>
-
-                                  <Button
-                                    type="button"
-                                    variant="outline"
-                                    disabled={!paramMove.targetId}
-                                    onClick={() => {
-                                      moveParameterRelative(
-                                        test.layoutKey,
-                                        param.id,
-                                        paramMove.targetId,
-                                        paramMove.position
-                                      );
-
-                                      setParameterMoveSelections((prev) => ({
-                                        ...prev,
-                                        [paramMoveKey]: {
-                                          position: paramMove.position,
-                                          targetId: '',
-                                        },
-                                      }));
-                                    }}
-                                  >
-                                    Ubicar
-                                  </Button>
-                                </div>
                               </div>
                             )}
-                          </div>
+                          </SortableShell>
                         );
                       })}
-                    </div>
+                        </div>
+                      </SortableContext>
+                    </DndContext>
                   </div>
                 );
               })}
