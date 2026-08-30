@@ -17,11 +17,6 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import {
-  HoverCard,
-  HoverCardContent,
-  HoverCardTrigger,
-} from '@/components/ui/hover-card';
-import {
   Loader2,
   Plus,
   Search,
@@ -177,7 +172,8 @@ type LabConfig = {
   legal_name?: string | null;
   email?: string | null;
 };
-type TestDiscountMap = Record<string, string>;
+type GlobalDiscountType = 'VALUE' | 'PERCENT';
+type OrderWizardStep = 1 | 2 | 3;
 type PaymentFormType = {
   amount: string;
   payment_method: string;
@@ -234,6 +230,328 @@ const CONSUMIDOR_FINAL_DATA: BillingFormType = {
   email: '',
 };
 
+function normalizeExamText(value: any): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function capitalizeExamName(value: string): string {
+  const keepUpper = new Set([
+    'HIV', 'TSH', 'LH', 'FSH', 'HCG', 'BUN', 'HDL', 'LDL', 'LDH', 'CK', 'NAC',
+    'MB', 'GGT', 'CA', 'C3', 'C4', 'IGG', 'IGM', 'IGA', 'IGE', 'TGO', 'TGP',
+    'VCM', 'HCM', 'CHCM', 'RH', 'T3', 'T4', 'P24', 'ASTO', 'VDRL',
+  ]);
+
+  return String(value || '')
+    .trim()
+    .toLocaleLowerCase('es-EC')
+    .replace(/(^|[\s(/-])([\p{L}\p{N}])/gu, (_, prefix, letter) =>
+      `${prefix}${letter.toLocaleUpperCase('es-EC')}`
+    )
+    .split(' ')
+    .map((word) => {
+      const clean = normalizeExamText(word).replace(/ /g, '');
+      return keepUpper.has(clean) ? clean : word;
+    })
+    .join(' ');
+}
+
+function getOrderPickerTestLabel(test: any): string {
+  const rawTestName = String(test?.name || '').trim();
+  const rawDescription = String(test?.description || '').trim();
+  const normalizedTestName = normalizeExamText(rawTestName);
+  const normalizedDescription = normalizeExamText(rawDescription);
+
+  if (
+    normalizedTestName.includes('INVESTIGACION DE ANTICUERPOS Y ANTIGENO P24 HIV') ||
+    normalizedDescription.includes('INVESTIGACION DE ANTICUERPOS Y ANTIGENO P24 HIV') ||
+    normalizedTestName.includes('HIV SIDA DE CUARTA GENERACION') ||
+    normalizedDescription.includes('HIV SIDA DE CUARTA GENERACION')
+  ) {
+    return 'HIV';
+  }
+
+  const parametros = [...(test?.parametros_prueba || [])].sort(
+    (a: any, b: any) => safeNumber(a?.sort_order, 0) - safeNumber(b?.sort_order, 0)
+  );
+
+  if (parametros.length === 1) {
+    const parameterName = String(parametros[0]?.name || '').trim();
+    if (parameterName) return capitalizeExamName(parameterName);
+  }
+
+  return capitalizeExamName(rawTestName || 'Prueba');
+}
+
+type ExamSectionKey =
+  | 'HEMATOLOGICOS'
+  | 'HEMOSTASIA'
+  | 'INMUNOLOGICOS'
+  | 'INMUNOGLOBULINAS'
+  | 'BIOQUIMICOS'
+  | 'ENZIMAS'
+  | 'MARCADORES_TUMORALES'
+  | 'ELECTROLITOS'
+  | 'FERTILIDAD_HORMONAS'
+  | 'BACTERIOLOGICOS'
+  | 'ORINA'
+  | 'HECES'
+  | 'OTROS_EXAMENES';
+
+type ExamCatalogItem = {
+  label: string;
+  aliases?: string[];
+};
+
+type ExamSectionDefinition = {
+  key: ExamSectionKey;
+  title: string;
+  column: 1 | 2 | 3;
+  items: ExamCatalogItem[];
+};
+
+const EXAM_SECTIONS: ExamSectionDefinition[] = [
+  {
+    key: 'HEMATOLOGICOS', title: 'HEMATOLÓGICOS', column: 1,
+    items: [
+      { label: 'Hemograma Completo', aliases: ['HEMOGRAMA', 'BIOMETRIA HEMATICA'] },
+      { label: 'Plaquetas', aliases: ['PLAQUETAS'] },
+      { label: 'Reticulocitos', aliases: ['RETICULOCITOS'] },
+      { label: 'Eritrosedimentación', aliases: ['ERITROSEDIMENTACION', 'VELOCIDAD DE SEDIMENTACION', 'VSG'] },
+      { label: 'Grupo Sanguíneo', aliases: ['GRUPO SANGUINEO', 'GRUPO SANGUINEO Y FACTOR RH'] },
+      { label: 'Factor Rh', aliases: ['FACTOR RH', 'RH'] },
+      { label: 'Plasmodium', aliases: ['PLASMODIUM'] },
+      { label: 'Constantes VCM', aliases: ['CONSTANTES VCM', 'VCM'] },
+      { label: 'Corpusculares HCM', aliases: ['CORPUSCULARES HCM', 'HCM'] },
+      { label: 'Corpusculares CHCM', aliases: ['CORPUSCULARES CHCM', 'CHCM'] },
+    ],
+  },
+  {
+    key: 'HEMOSTASIA', title: 'HEMOSTASIA', column: 1,
+    items: [
+      { label: 'T. Sangría', aliases: ['T SANGRIA', 'TIEMPO DE SANGRIA'] },
+      { label: 'T. Coagulación', aliases: ['T COAGULACION', 'TIEMPO DE COAGULACION'] },
+      { label: 'T. Protrombina', aliases: ['T PROTROMBINA', 'TIEMPO DE PROTROMBINA', 'TP'] },
+      { label: 'T.P Tromboplastina', aliases: ['T P TROMBOPLASTINA', 'TROMBOPLASTINA', 'TTP', 'TTPA'] },
+      { label: 'Fibrinógeno', aliases: ['FIBRINOGENO'] },
+    ],
+  },
+  {
+    key: 'INMUNOLOGICOS', title: 'INMUNOLÓGICOS', column: 1,
+    items: [
+      { label: 'R. de Widal', aliases: ['R DE WIDAL', 'REACCION DE WIDAL', 'WIDAL'] },
+      { label: 'R. Weil Félix', aliases: ['R WEIL FELIX', 'WEIL FELIX'] },
+      { label: 'Proteína C. Reactiva', aliases: ['PROTEINA C REACTIVA', 'PCR'] },
+      { label: 'R. A. Test', aliases: ['R A TEST', 'RA TEST'] },
+      { label: 'A.S.T.O.', aliases: ['A S T O', 'ASTO', 'ANTI ESTREPTOLISINA O'] },
+      { label: 'V.D.R.L.', aliases: ['V D R L', 'VDRL'] },
+      { label: 'Factor Reumatoideo', aliases: ['FACTOR REUMATOIDEO', 'FACTOR REUMATOIDE'] },
+      { label: 'Ac. Anti Dengue IgG', aliases: ['AC ANTI DENGUE IGG', 'DENGUE IGG'] },
+      { label: 'Ac. Anti Dengue IgM', aliases: ['AC ANTI DENGUE IGM', 'DENGUE IGM'] },
+      { label: 'Toxoplasma IgG', aliases: ['TOXOPLASMA IGG', 'TOXOPLASMOSIS IGG'] },
+      { label: 'Toxoplasma IgM', aliases: ['TOXOPLASMA IGM', 'TOXOPLASMOSIS IGM'] },
+      { label: 'Rubéola IgG', aliases: ['RUBEOLA IGG'] },
+      { label: 'Rubéola IgM', aliases: ['RUBEOLA IGM'] },
+      { label: 'Seroameba', aliases: ['SEROAMEBA', 'AMEBA'] },
+      { label: 'Helicobacter Pylori', aliases: ['HELICOBACTER PYLORI'] },
+      { label: 'Citomegalovirus IgG', aliases: ['CITOMEGALOVIRUS IGG', 'CMV IGG'] },
+      { label: 'Citomegalovirus IgM', aliases: ['CITOMEGALOVIRUS IGM', 'CMV IGM'] },
+      { label: 'Chlamydias', aliases: ['CHLAMYDIAS', 'CLAMIDIA', 'CHLAMYDIA'] },
+      { label: 'Herpes I', aliases: ['HERPES I', 'HERPES 1', 'HERPES SIMPLEX 1'] },
+      { label: 'Herpes II', aliases: ['HERPES II', 'HERPES 2', 'HERPES SIMPLEX 2'] },
+      { label: 'HIV', aliases: ['HIV', 'VIH', 'ANTIGENO P24 HIV', 'HIV SIDA DE CUARTA GENERACION'] },
+      { label: 'Test de Mononucleosis', aliases: ['TEST DE MONONUCLEOSIS', 'MONONUCLEOSIS'] },
+      { label: 'Complemento C3 - C4', aliases: ['COMPLEMENTO C3 C4', 'C3 C4'] },
+      { label: 'Hepatitis A', aliases: ['HEPATITIS A'] },
+      { label: 'HbsAg (Superficie)', aliases: ['HBSAG', 'HBS AG', 'ANTIGENO DE SUPERFICIE HEPATITIS B'] },
+      { label: 'Hepatitis C', aliases: ['HEPATITIS C'] },
+      { label: 'Hepatitis D', aliases: ['HEPATITIS D'] },
+    ],
+  },
+  {
+    key: 'INMUNOGLOBULINAS', title: 'INMUNOGLOBULINAS', column: 1,
+    items: [
+      { label: 'IgG', aliases: ['IGG', 'INMUNOGLOBULINA G'] },
+      { label: 'IgE', aliases: ['IGE', 'INMUNOGLOBULINA E'] },
+      { label: 'IgA', aliases: ['IGA', 'INMUNOGLOBULINA A'] },
+      { label: 'IgM', aliases: ['IGM', 'INMUNOGLOBULINA M'] },
+    ],
+  },
+  {
+    key: 'BIOQUIMICOS', title: 'BIOQUÍMICOS', column: 2,
+    items: [
+      { label: 'Glicemia (Ayunas)', aliases: ['GLICEMIA AYUNAS', 'GLUCOSA AYUNAS', 'GLICEMIA EN AYUNAS'] },
+      { label: 'Glicemia (P. Prandial)', aliases: ['GLICEMIA P PRANDIAL', 'GLICEMIA POST PRANDIAL', 'GLUCOSA POSTPRANDIAL'] },
+      { label: 'Glicemia (Tolerancia)', aliases: ['GLICEMIA TOLERANCIA', 'TOLERANCIA A LA GLUCOSA'] },
+      { label: 'Urea', aliases: ['UREA'] },
+      { label: 'Creatinina', aliases: ['CREATININA'] },
+      { label: 'Ácido Úrico', aliases: ['ACIDO URICO'] },
+      { label: 'BUN', aliases: ['BUN', 'NITROGENO UREICO'] },
+      { label: 'Hierro Sérico', aliases: ['HIERRO SERICO', 'HIERRO'] },
+      { label: 'Proteínas Tot.', aliases: ['PROTEINAS TOT', 'PROTEINAS TOTALES'] },
+      { label: 'Sero Albúminas', aliases: ['SERO ALBUMINAS', 'ALBUMINA', 'ALBUMINAS'] },
+      { label: 'Sero Globulinas', aliases: ['SERO GLOBULINAS', 'GLOBULINAS'] },
+      { label: 'Bilirrubina Tot.', aliases: ['BILIRRUBINA TOT', 'BILIRRUBINA TOTAL'] },
+      { label: 'Bilirrubina Directa', aliases: ['BILIRRUBINA DIRECTA'] },
+      { label: 'Bilirrubina Indirecta', aliases: ['BILIRRUBINA INDIRECTA'] },
+      { label: 'Colesterol', aliases: ['COLESTEROL', 'COLESTEROL TOTAL'] },
+      { label: 'HDL Colesterol', aliases: ['HDL COLESTEROL', 'COLESTEROL HDL'] },
+      { label: 'LDL Colesterol', aliases: ['LDL COLESTEROL', 'COLESTEROL LDL'] },
+      { label: 'Triglicéridos', aliases: ['TRIGLICERIDOS'] },
+      { label: 'Lípidos Totales', aliases: ['LIPIDOS TOTALES'] },
+    ],
+  },
+  {
+    key: 'ENZIMAS', title: 'ENZIMAS', column: 2,
+    items: [
+      { label: 'T.G.O.', aliases: ['T G O', 'TGO', 'AST'] },
+      { label: 'T.G.P.', aliases: ['T G P', 'TGP', 'ALT'] },
+      { label: 'L.D.H.', aliases: ['L D H', 'LDH', 'DESHIDROGENASA LACTICA'] },
+      { label: 'C.K. NAC.', aliases: ['C K NAC', 'CK NAC', 'CK TOTAL'] },
+      { label: 'C.K. MB.', aliases: ['C K MB', 'CK MB', 'CKMB'] },
+      { label: 'Gamma G.T.', aliases: ['GAMMA G T', 'GGT', 'GAMMA GLUTAMIL TRANSFERASA'] },
+      { label: 'Fosfatasa Alcalina', aliases: ['FOSFATASA ALCALINA'] },
+      { label: 'Fosfatasa Ácida', aliases: ['FOSFATASA ACIDA'] },
+      { label: 'Fosfatasa Ácida Prostática', aliases: ['FOSFATASA ACIDA PROSTATICA'] },
+      { label: 'Colinesterasa', aliases: ['COLINESTERASA'] },
+      { label: 'Lipasa', aliases: ['LIPASA'] },
+      { label: 'Amilasa', aliases: ['AMILASA'] },
+    ],
+  },
+  {
+    key: 'MARCADORES_TUMORALES', title: 'MARCADORES TUMORALES', column: 2,
+    items: [
+      { label: 'Alfa Fetoproteínas', aliases: ['ALFA FETOPROTEINAS', 'AFP'] },
+      { label: 'Antíg. Carcinoembrionario', aliases: ['ANTIG CARCINOEMBRIONARIO', 'ANTIGENO CARCINOEMBRIONARIO', 'CEA'] },
+      { label: 'Antíg. Prostático Específico', aliases: ['ANTIG PROSTATICO ESPECIFICO', 'ANTIGENO PROSTATICO ESPECIFICO', 'PSA'] },
+      { label: 'CA - 125 (Útero-Ovario)', aliases: ['CA 125', 'CA125'] },
+      { label: 'CA - 15-3 (Mamas)', aliases: ['CA 15 3', 'CA15 3'] },
+      { label: 'CA - 19-9 (T. Digestivo)', aliases: ['CA 19 9', 'CA19 9'] },
+      { label: 'CA - 72-4 (T. Digestivo)', aliases: ['CA 72 4', 'CA72 4'] },
+      { label: 'Cyfra 21-1 (Pulmón)', aliases: ['CYFRA 21 1', 'CYFRA21 1'] },
+    ],
+  },
+  {
+    key: 'ELECTROLITOS', title: 'ELECTROLITOS', column: 2,
+    items: [
+      { label: 'Sodio', aliases: ['SODIO', 'NA'] },
+      { label: 'Potasio', aliases: ['POTASIO'] },
+      { label: 'Calcio', aliases: ['CALCIO'] },
+      { label: 'Cloro', aliases: ['CLORO', 'CLORURO'] },
+    ],
+  },
+  {
+    key: 'FERTILIDAD_HORMONAS', title: 'FERTILIDAD Y HORMONAS', column: 3,
+    items: [
+      { label: 'Espermatograma', aliases: ['ESPERMATOGRAMA'] },
+      { label: 'T3 Total', aliases: ['T3 TOTAL'] },
+      { label: 'T3 Libre', aliases: ['T3 LIBRE'] },
+      { label: 'T4 Total', aliases: ['T4 TOTAL'] },
+      { label: 'T4 Libre', aliases: ['T4 LIBRE'] },
+      { label: 'TSH', aliases: ['TSH', 'HORMONA ESTIMULANTE DE TIROIDES'] },
+      { label: 'LH', aliases: ['LH', 'HORMONA LUTEINIZANTE'] },
+      { label: 'FSH', aliases: ['FSH', 'HORMONA FOLICULO ESTIMULANTE'] },
+      { label: 'Prolactina', aliases: ['PROLACTINA'] },
+      { label: 'Progesterona', aliases: ['PROGESTERONA'] },
+      { label: '17 β-Estradiol', aliases: ['17 B ESTRADIOL', '17 BETA ESTRADIOL', 'ESTRADIOL'] },
+      { label: 'Testosterona', aliases: ['TESTOSTERONA'] },
+      { label: 'Cortisol', aliases: ['CORTISOL'] },
+      { label: 'HCG β-Cualitativo (Embarazo)', aliases: ['HCG B CUALITATIVO', 'HCG BETA CUALITATIVO', 'BETA HCG CUALITATIVO'] },
+      { label: 'HCG β-Cuantitativo', aliases: ['HCG B CUANTITATIVO', 'HCG BETA CUANTITATIVO', 'BETA HCG CUANTITATIVO'] },
+    ],
+  },
+  {
+    key: 'BACTERIOLOGICOS', title: 'BACTERIOLÓGICOS', column: 3,
+    items: [
+      { label: 'Exudado Faríngeo', aliases: ['EXUDADO FARINGEO'] },
+      { label: 'Hemocultivo', aliases: ['HEMOCULTIVO'] },
+      { label: 'Urocultivo', aliases: ['UROCULTIVO'] },
+      { label: 'Coprocultivo', aliases: ['COPROCULTIVO'] },
+      { label: 'Secreción Vaginal', aliases: ['SECRECION VAGINAL'] },
+      { label: 'Secreción Uretral', aliases: ['SECRECION URETRAL'] },
+      { label: 'Esputo', aliases: ['ESPUTO', 'CULTIVO DE ESPUTO'] },
+    ],
+  },
+  {
+    key: 'ORINA', title: 'ORINA', column: 3,
+    items: [
+      { label: 'Fís. Quím. Sedimento', aliases: ['FIS QUIM SEDIMENTO', 'FISICO QUIMICO SEDIMENTO', 'EXAMEN DE ORINA', 'ELEMENTAL Y MICROSCOPICO DE ORINA'] },
+      { label: 'Test de Embarazo', aliases: ['TEST DE EMBARAZO', 'PRUEBA DE EMBARAZO'] },
+      { label: 'Depuración de Creatinina 24h', aliases: ['DEPURACION DE CREATININA 24H', 'CLEARANCE DE CREATININA'] },
+    ],
+  },
+  {
+    key: 'HECES', title: 'HECES', column: 3,
+    items: [
+      { label: 'Parasitológico', aliases: ['PARASITOLOGICO', 'COPROPARASITARIO'] },
+      { label: 'Sangre Oculta', aliases: ['SANGRE OCULTA', 'SANGRE OCULTA EN HECES'] },
+      { label: 'Estudio de Moco Fecal', aliases: ['ESTUDIO DE MOCO FECAL', 'MOCO FECAL'] },
+      { label: 'Coprocultivo', aliases: ['COPROCULTIVO'] },
+      { label: 'Helicobacter Pylori en Heces', aliases: ['HELICOBACTER PYLORI EN HECES', 'H PYLORI EN HECES'] },
+    ],
+  },
+  { key: 'OTROS_EXAMENES', title: 'OTROS EXÁMENES', column: 3, items: [] },
+];
+
+function getExamCatalogPlacement(test: any): {
+  sectionKey: ExamSectionKey;
+  sectionTitle: string;
+  column: 1 | 2 | 3;
+  order: number;
+  label: string;
+} {
+  const pickerLabel = getOrderPickerTestLabel(test);
+  const candidates = [
+    pickerLabel,
+    test?.name,
+    test?.description,
+    ...(Array.isArray(test?.parametros_prueba)
+      ? test.parametros_prueba.map((p: any) => p?.name)
+      : []),
+  ]
+    .map(normalizeExamText)
+    .filter(Boolean);
+
+  for (const section of EXAM_SECTIONS) {
+    if (section.key === 'OTROS_EXAMENES') continue;
+
+    for (let index = 0; index < section.items.length; index += 1) {
+      const item = section.items[index];
+      const aliases = [item.label, ...(item.aliases || [])].map(normalizeExamText);
+      const matches = candidates.some((candidate) =>
+        aliases.some((alias) =>
+          candidate === alias ||
+          (alias.length >= 5 && candidate.includes(alias)) ||
+          (candidate.length >= 5 && alias.includes(candidate))
+        )
+      );
+
+      if (matches) {
+        return {
+          sectionKey: section.key,
+          sectionTitle: section.title,
+          column: section.column,
+          order: index,
+          label: item.label === 'HIV' ? 'HIV' : capitalizeExamName(item.label),
+        };
+      }
+    }
+  }
+
+  return {
+    sectionKey: 'OTROS_EXAMENES',
+    sectionTitle: 'OTROS EXÁMENES',
+    column: 3,
+    order: Number.MAX_SAFE_INTEGER,
+    label: pickerLabel,
+  };
+}
+
 export default function OrdersPage() {
   const [orders, setOrders] = useState<any[]>([]);
   const [patients, setPatients] = useState<any[]>([]);
@@ -248,7 +566,8 @@ export default function OrdersPage() {
     notes: '',
   });
 
-  const [testDiscounts, setTestDiscounts] = useState<TestDiscountMap>({});
+  const [orderWizardStep, setOrderWizardStep] = useState<OrderWizardStep>(1);
+  const [globalDiscountType, setGlobalDiscountType] = useState<GlobalDiscountType>('VALUE');
   const [globalDiscount, setGlobalDiscount] = useState('');
 
   const [loading, setLoading] = useState(true);
@@ -533,10 +852,6 @@ export default function OrdersPage() {
     return patients.find((p) => p.id === selectedPatient) || null;
   }, [patients, selectedPatient]);
 
-  const getTestDiscount = (testId: string) => {
-    return round2(Math.max(safeNumber(testDiscounts[testId], 0), 0));
-  };
-
   const getBaseSubtotalOfSelectedTests = () => {
     return round2(
       selectedTests.reduce((acc, testId) => {
@@ -544,18 +859,6 @@ export default function OrdersPage() {
         return acc + safeNumber(test?.price, 0);
       }, 0)
     );
-  };
-
-  const getTotalItemDiscount = () => {
-    return round2(
-      selectedTests.reduce((acc, testId) => {
-        return acc + getTestDiscount(testId);
-      }, 0)
-    );
-  };
-
-  const getSafeGlobalDiscount = () => {
-    return round2(Math.max(safeNumber(globalDiscount, 0), 0));
   };
 
   const filteredPatients = useMemo(() => {
@@ -572,70 +875,112 @@ export default function OrdersPage() {
   }, [patients, patientSearch]);
 
   const filteredTestsForPicker = useMemo(() => {
-    const q = testSearch.trim().toLowerCase();
-    if (!q) return tests;
+    const q = normalizeExamText(testSearch);
 
-    return tests.filter((t) => {
-      const nombre = String(t.name || '').toLowerCase();
-      const descripcion = String(t.description || '').toLowerCase();
+    return tests
+      .map((test) => {
+        const placement = getExamCatalogPlacement(test);
+        return { ...test, pickerPlacement: placement };
+      })
+      .filter((test) => {
+        if (!q) return true;
 
-      const coincideParametro = Array.isArray(t.parametros_prueba)
-        ? t.parametros_prueba.some((param: any) =>
-            String(param?.name || '').toLowerCase().includes(q)
-          )
-        : false;
+        const searchable = [
+          test.pickerPlacement.label,
+          test.name,
+          test.description,
+          ...(Array.isArray(test.parametros_prueba)
+            ? test.parametros_prueba.map((param: any) => param?.name)
+            : []),
+        ]
+          .map(normalizeExamText)
+          .filter(Boolean);
 
-      return nombre.includes(q) || descripcion.includes(q) || coincideParametro;
-    });
+        return searchable.some((value) => value.includes(q));
+      });
   }, [tests, testSearch]);
 
-  const selectedTestsSummary = useMemo(() => {
-    const baseSubtotal = getBaseSubtotalOfSelectedTests();
-    const totalItemDiscount = getTotalItemDiscount();
-    const safeGlobalDiscount = getSafeGlobalDiscount();
+  const groupedTestsForPicker = useMemo(() => {
+    return ([1, 2, 3] as const).map((column) => ({
+      column,
+      sections: EXAM_SECTIONS
+        .filter((section) => section.column === column)
+        .map((section) => {
+          const sectionTests = filteredTestsForPicker
+            .filter((test: any) => test.pickerPlacement.sectionKey === section.key)
+            .sort((a: any, b: any) => {
+              const byOrder = a.pickerPlacement.order - b.pickerPlacement.order;
+              if (byOrder !== 0) return byOrder;
+              return a.pickerPlacement.label.localeCompare(b.pickerPlacement.label, 'es', {
+                sensitivity: 'base',
+              });
+            });
 
-    const maxGlobalDiscount = Math.max(baseSubtotal - totalItemDiscount, 0);
-    const appliedGlobalDiscount = round2(Math.min(safeGlobalDiscount, maxGlobalDiscount));
+          return { ...section, tests: sectionTests };
+        })
+        .filter((section) => section.tests.length > 0),
+    }));
+  }, [filteredTestsForPicker]);
+
+  const selectedTestsSummary = useMemo(() => {
+    const baseSubtotal = round2(
+      selectedTests.reduce((acc, testId) => {
+        const test = tests.find((t) => t.id === testId);
+        return acc + safeNumber(test?.price, 0);
+      }, 0)
+    );
+
+    const enteredDiscount = Math.max(safeNumber(globalDiscount, 0), 0);
+    const appliedGlobalDiscount =
+      globalDiscountType === 'PERCENT'
+        ? round2(
+            Math.min(
+              baseSubtotal * (Math.min(enteredDiscount, 100) / 100),
+              baseSubtotal
+            )
+          )
+        : round2(Math.min(enteredDiscount, baseSubtotal));
+
+    let allocatedDiscount = 0;
 
     return selectedTests
-      .map((tid) => {
+      .map((tid, index) => {
         const test = tests.find((t) => t.id === tid);
         if (!test) return null;
 
         const precio = round2(safeNumber(test.price));
         const porcentajeIva = round2(safeNumber(test.porcentaje_iva, 0));
-        const descuentoItem = round2(Math.min(getTestDiscount(tid), precio));
 
-        const subtotalDespuesDescuentoItem = round2(Math.max(precio - descuentoItem, 0));
+        const isLast = index === selectedTests.length - 1;
+        const proportionalDiscount =
+          baseSubtotal > 0 ? round2(appliedGlobalDiscount * (precio / baseSubtotal)) : 0;
 
-        const proporcionGlobal =
-          maxGlobalDiscount > 0
-            ? subtotalDespuesDescuentoItem / maxGlobalDiscount
-            : 0;
+        const descuentoGlobalAsignado = isLast
+          ? round2(Math.max(appliedGlobalDiscount - allocatedDiscount, 0))
+          : round2(Math.min(proportionalDiscount, precio));
 
-        const descuentoGlobalAsignado = round2(appliedGlobalDiscount * proporcionGlobal);
+        allocatedDiscount = round2(allocatedDiscount + descuentoGlobalAsignado);
 
         const subtotalSinImpuesto = round2(
-          Math.max(subtotalDespuesDescuentoItem - descuentoGlobalAsignado, 0)
+          Math.max(precio - descuentoGlobalAsignado, 0)
         );
-
-        const descuentoTotal = round2(descuentoItem + descuentoGlobalAsignado);
         const valorIva = round2(subtotalSinImpuesto * (porcentajeIva / 100));
         const totalLinea = round2(subtotalSinImpuesto + valorIva);
 
         return {
           ...test,
+          pickerLabel: getOrderPickerTestLabel(test),
           subtotalOriginal: precio,
-          descuentoItem,
+          descuentoItem: 0,
           descuentoGlobalAsignado,
-          descuentoTotal,
+          descuentoTotal: descuentoGlobalAsignado,
           subtotal: subtotalSinImpuesto,
           valorIva,
           totalLinea,
         };
       })
       .filter(Boolean) as any[];
-  }, [selectedTests, tests, testDiscounts, globalDiscount]);
+  }, [selectedTests, tests, globalDiscount, globalDiscountType]);
 
   const selectedTestsSummaryGrouped = useMemo(() => {
     const mapa = new Map<string, any>();
@@ -794,13 +1139,37 @@ export default function OrdersPage() {
   };
 
   const openCreateOrderDialog = () => {
+    setOrderWizardStep(1);
     setSelectedTests([]);
     setSelectedPatient('');
     setSelectedDoctor('');
     setPatientSearch('');
     setTestSearch('');
+    setGlobalDiscountType('VALUE');
+    setGlobalDiscount('');
+    setInitialPaymentForm({
+      amount: '',
+      payment_method: 'EFECTIVO',
+      reference: '',
+      notes: '',
+    });
     resetBillingSection();
     setDialogOpen(true);
+  };
+
+
+  const goToOrderWizardStep = (step: OrderWizardStep) => {
+    if (step >= 2 && !selectedPatient) {
+      toast.error('Seleccione un paciente para continuar');
+      return;
+    }
+
+    if (step >= 3 && selectedTests.length === 0) {
+      toast.error('Seleccione al menos una prueba para continuar');
+      return;
+    }
+
+    setOrderWizardStep(step);
   };
 
   const handleSavePatient = async () => {
@@ -1411,7 +1780,8 @@ export default function OrdersPage() {
       setSelectedTests([]);
       setPatientSearch('');
       setTestSearch('');
-      setTestDiscounts({});
+      setOrderWizardStep(1);
+      setGlobalDiscountType('VALUE');
       setGlobalDiscount('');
       resetBillingSection();
       setInitialPaymentForm({
@@ -2306,612 +2676,437 @@ export default function OrdersPage() {
         </CardContent>
       </Card>
 
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="max-w-3xl w-[96vw] max-h-[90vh] overflow-hidden rounded-3xl p-0">
-          <div className="flex max-h-[90vh] flex-col">
-            <DialogHeader className="shrink-0 px-6 pt-6 pb-2 border-b bg-white">
-              <DialogTitle className="font-display text-3xl font-bold">
-                Generar Nueva Orden
-              </DialogTitle>
-            </DialogHeader>
-
-            <div className="flex-1 overflow-y-auto px-6 py-6 space-y-6">
-              <div className="space-y-3">
-                <div className="flex items-center justify-between gap-3">
-                  <Label className="text-xs font-bold uppercase tracking-wide text-slate-700">
-                    Seleccionar paciente
-                  </Label>
-
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="rounded-xl"
-                    onClick={openCreatePatient}
-                  >
-                    <UserPlus className="w-4 h-4 mr-2" />
-                    Nuevo paciente
-                  </Button>
+      <Dialog
+        open={dialogOpen}
+        onOpenChange={(open) => {
+          setDialogOpen(open);
+          if (!open) setOrderWizardStep(1);
+        }}
+      >
+        <DialogContent className="max-w-5xl w-[96vw] max-h-[94vh] overflow-hidden rounded-3xl p-0">
+          <div className="flex max-h-[94vh] flex-col bg-slate-50">
+            <DialogHeader className="shrink-0 border-b bg-white px-5 py-5 sm:px-7">
+              <div className="space-y-4">
+                <div>
+                  <DialogTitle className="font-display text-2xl sm:text-3xl font-bold">
+                    Generar nueva orden
+                  </DialogTitle>
+                  <p className="mt-1 text-sm text-slate-500">
+                    Complete los datos en tres pasos.
+                  </p>
                 </div>
 
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                  <Input
-                    className="pl-10 pr-24 h-12 rounded-xl border-slate-200 bg-white shadow-sm disabled:bg-slate-100 disabled:text-slate-500"
-                    placeholder="Buscar por nombre, cédula o email..."
-                    value={
-                      selectedPatientData
-                        ? `${selectedPatientData.name} — ${selectedPatientData.cedula || 'Sin cédula'}`
-                        : patientSearch
-                    }
-                    onChange={(e) => setPatientSearch(e.target.value)}
-                    disabled={!!selectedPatientData}
-                  />
+                <div className="grid grid-cols-3 gap-2">
+                  {[
+                    { step: 1 as OrderWizardStep, title: 'Paciente y médico' },
+                    { step: 2 as OrderWizardStep, title: 'Pruebas' },
+                    { step: 3 as OrderWizardStep, title: 'Pago' },
+                  ].map((item) => {
+                    const active = orderWizardStep === item.step;
+                    const completed = orderWizardStep > item.step;
+                    const enabled =
+                      item.step === 1 ||
+                      (item.step === 2 && !!selectedPatient) ||
+                      (item.step === 3 && !!selectedPatient && selectedTests.length > 0);
 
-                  {selectedPatientData && (
-                    <div className="absolute right-2 top-1/2 -translate-y-1/2">
+                    return (
+                      <button
+                        key={item.step}
+                        type="button"
+                        disabled={!enabled}
+                        onClick={() => goToOrderWizardStep(item.step)}
+                        className={`rounded-2xl border px-2 py-3 text-left transition sm:px-4 ${
+                          active
+                            ? 'border-primary bg-primary text-primary-foreground shadow-sm'
+                            : completed
+                            ? 'border-emerald-200 bg-emerald-50 text-emerald-800'
+                            : 'border-slate-200 bg-white text-slate-500'
+                        } disabled:cursor-not-allowed disabled:opacity-50`}
+                      >
+                        <div className="flex items-center gap-2">
+                          <div
+                            className={`flex h-7 w-7 shrink-0 items-center justify-center rounded-full text-xs font-bold ${
+                              active
+                                ? 'bg-white/20 text-white'
+                                : completed
+                                ? 'bg-emerald-600 text-white'
+                                : 'bg-slate-100 text-slate-600'
+                            }`}
+                          >
+                            {completed ? '✓' : item.step}
+                          </div>
+                          <span className="hidden text-xs font-semibold sm:block lg:text-sm">
+                            {item.title}
+                          </span>
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </DialogHeader>
+
+            <div className="flex-1 overflow-y-auto px-5 py-5 sm:px-7 sm:py-6">
+              {orderWizardStep === 1 && (
+                <div className="mx-auto max-w-3xl space-y-7">
+                  <section className="space-y-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <Label className="text-xs font-bold uppercase tracking-wide text-slate-700">
+                          Paciente *
+                        </Label>
+                        <p className="mt-1 text-xs text-slate-500">
+                          Busque un paciente existente o registre uno nuevo.
+                        </p>
+                      </div>
+
                       <Button
                         type="button"
                         variant="outline"
                         size="sm"
-                        className="rounded-lg"
-                        onClick={handleClearPatient}
+                        className="rounded-xl"
+                        onClick={openCreatePatient}
                       >
-                        Quitar
+                        <UserPlus className="mr-2 h-4 w-4" />
+                        Nuevo paciente
                       </Button>
+                    </div>
+
+                    <div className="relative">
+                      <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                      <Input
+                        className="h-12 rounded-xl border-slate-200 bg-white pl-10 pr-24 shadow-sm disabled:bg-slate-100"
+                        placeholder="Buscar por nombre, cédula o email..."
+                        value={
+                          selectedPatientData
+                            ? `${selectedPatientData.name} — ${
+                                selectedPatientData.cedula || 'Sin cédula'
+                              }`
+                            : patientSearch
+                        }
+                        onChange={(e) => setPatientSearch(e.target.value)}
+                        disabled={!!selectedPatientData}
+                      />
+
+                      {selectedPatientData && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="absolute right-2 top-1/2 -translate-y-1/2 rounded-lg"
+                          onClick={handleClearPatient}
+                        >
+                          Cambiar
+                        </Button>
+                      )}
+                    </div>
+
+                    {selectedPatientData ? (
+                      <div className="rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                        <div className="font-semibold text-emerald-800">
+                          {selectedPatientData.name}
+                        </div>
+                        <div className="mt-1 text-sm text-slate-600">
+                          Cédula: {selectedPatientData.cedula || '—'}
+                          {selectedPatientData.phone ? ` • ${selectedPatientData.phone}` : ''}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="max-h-64 space-y-2 overflow-y-auto rounded-2xl border border-slate-200 bg-white p-2">
+                        {patientSearch.trim() === '' ? (
+                          <div className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-500">
+                            Escriba para buscar un paciente.
+                          </div>
+                        ) : filteredPatients.length > 0 ? (
+                          filteredPatients.map((patient) => (
+                            <button
+                              key={patient.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedPatient(patient.id);
+                                setPatientSearch('');
+                              }}
+                              className="w-full rounded-xl border border-slate-200 bg-white px-4 py-3 text-left transition hover:border-primary/40 hover:bg-primary/5"
+                            >
+                              <div className="font-semibold text-slate-800">{patient.name}</div>
+                              <div className="mt-1 text-xs text-slate-500">
+                                {patient.cedula || 'Sin cédula'}
+                                {patient.email ? ` • ${patient.email}` : ''}
+                              </div>
+                            </button>
+                          ))
+                        ) : (
+                          <div className="rounded-xl border border-dashed border-slate-300 px-4 py-8 text-center text-sm text-slate-500">
+                            No existen coincidencias.
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </section>
+
+                  <section className="space-y-3 border-t border-slate-200 pt-6">
+                    <div className="flex items-center justify-between gap-3">
+                      <div>
+                        <Label className="text-xs font-bold uppercase tracking-wide text-slate-700">
+                          Médico solicitante
+                        </Label>
+                        <p className="mt-1 text-xs text-slate-500">
+                          Opcional. Puede continuar sin médico.
+                        </p>
+                      </div>
+
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="rounded-xl"
+                        onClick={openCreateDoctor}
+                      >
+                        <Plus className="mr-2 h-4 w-4" />
+                        Nuevo médico
+                      </Button>
+                    </div>
+
+                    <Select
+                      value={selectedDoctor || '__none__'}
+                      onValueChange={(value) =>
+                        setSelectedDoctor(value === '__none__' ? '' : value)
+                      }
+                    >
+                      <SelectTrigger className="h-12 rounded-xl border-slate-200 bg-white shadow-sm">
+                        <SelectValue placeholder="Seleccione un médico" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__none__">Sin médico</SelectItem>
+                        {doctors.map((doctor) => (
+                          <SelectItem key={doctor.id} value={doctor.id}>
+                            {doctor.nombre}
+                            {doctor.especialidad ? ` — ${doctor.especialidad}` : ''}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </section>
+                </div>
+              )}
+
+              {orderWizardStep === 2 && (
+                <div className="space-y-5">
+                  <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                    <div>
+                      <Label className="text-xs font-bold uppercase tracking-wide text-slate-700">
+                        Pruebas de la orden *
+                      </Label>
+                      <p className="mt-1 text-sm text-slate-500">
+                        Seleccione todas las pruebas que correspondan a esta orden.
+                      </p>
+                    </div>
+
+                    <Badge variant="outline" className="w-fit rounded-full px-3 py-1">
+                      {selectedTests.length} seleccionada
+                      {selectedTests.length === 1 ? '' : 's'}
+                    </Badge>
+                  </div>
+
+                  <div className="relative">
+                    <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
+                    <Input
+                      className="h-12 rounded-xl border-slate-200 bg-white pl-10 shadow-sm"
+                      placeholder="Buscar prueba o parámetro..."
+                      value={testSearch}
+                      onChange={(e) => setTestSearch(e.target.value)}
+                    />
+                  </div>
+
+                  {filteredTestsForPicker.length > 0 ? (
+                    <div className="grid grid-cols-1 gap-x-8 gap-y-6 lg:grid-cols-3">
+                      {groupedTestsForPicker.map((column) => (
+                        <div key={column.column} className="min-w-0 space-y-5">
+                          {column.sections.map((section) => (
+                            <section key={section.key}>
+                              <div className="mb-1 border-b-2 border-primary pb-1 text-sm font-black uppercase tracking-wide text-primary">
+                                {section.title}
+                              </div>
+
+                              <div>
+                                {section.tests.map((test: any) => {
+                                  const isSelected = selectedTests.includes(test.id);
+
+                                  return (
+                                    <button
+                                      key={test.id}
+                                      type="button"
+                                      onClick={() =>
+                                        setSelectedTests((prev) =>
+                                          prev.includes(test.id)
+                                            ? prev.filter((id) => id !== test.id)
+                                            : [...prev, test.id]
+                                        )
+                                      }
+                                      className={`flex min-h-9 w-full items-center gap-2 border-b border-slate-200 px-0.5 py-1.5 text-left transition-colors ${
+                                        isSelected
+                                          ? 'font-semibold text-primary'
+                                          : 'text-slate-800 hover:text-primary'
+                                      }`}
+                                    >
+                                      <span
+                                        className={`flex h-4 w-4 shrink-0 items-center justify-center border text-[9px] font-bold transition-colors ${
+                                          isSelected
+                                            ? 'border-primary bg-primary text-primary-foreground'
+                                            : 'border-slate-400 bg-white text-transparent'
+                                        }`}
+                                        aria-hidden="true"
+                                      >
+                                        ✓
+                                      </span>
+
+                                      <span className="min-w-0 flex-1 text-[13px] leading-4">
+                                        {test.pickerPlacement.label}
+                                      </span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </section>
+                          ))}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="rounded-2xl border border-dashed border-slate-300 bg-white px-4 py-10 text-center text-sm text-slate-500">
+                      No existen pruebas que coincidan con la búsqueda.
                     </div>
                   )}
                 </div>
+              )}
 
-                {selectedPatientData ? (
-                  <div className="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm">
-                    <div className="font-semibold text-emerald-700">Paciente seleccionado</div>
-                    <div className="text-slate-700">
-                      {selectedPatientData.name} — {selectedPatientData.cedula || 'Sin cédula'}
-                    </div>
-                    {selectedPatientData.email && (
-                      <div className="text-xs text-slate-500">{selectedPatientData.email}</div>
-                    )}
-                  </div>
-                ) : (
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-2 max-h-64 overflow-y-auto space-y-2">
-                    {patientSearch.trim() === '' ? (
-                      <div className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-6 text-center text-sm text-slate-500">
-                        Escriba un nombre, cédula o email para buscar
+              {orderWizardStep === 3 && (
+                <div className="mx-auto max-w-4xl space-y-6">
+                  <section className="rounded-2xl border border-slate-200 bg-white p-5">
+                    <div className="mb-4 flex items-center justify-between gap-3">
+                      <div>
+                        <h3 className="font-semibold text-slate-900">Resumen de la orden</h3>
+                        <p className="text-xs text-slate-500">
+                          {selectedPatientData?.name || 'Paciente'} • {selectedTests.length}{' '}
+                          prueba{selectedTests.length === 1 ? '' : 's'}
+                        </p>
                       </div>
-                    ) : filteredPatients.length > 0 ? (
-                      filteredPatients.map((p) => (
-                        <button
-                          type="button"
-                          key={p.id}
-                          onClick={() => setSelectedPatient(p.id)}
-                          className="w-full text-left rounded-xl border border-slate-200 bg-white px-4 py-3 transition hover:border-emerald-300 hover:bg-emerald-50"
+                    </div>
+
+                    <div className="divide-y rounded-xl border border-slate-200">
+                      {selectedTestsSummary.map((test) => (
+                        <div
+                          key={test.id}
+                          className="flex items-center justify-between gap-4 px-4 py-3 text-sm"
                         >
-                          <div className="font-semibold">{p.name}</div>
-                          <div className="text-sm text-slate-500">
-                            Cédula: {p.cedula || '—'}
-                            {p.email ? ` • ${p.email}` : ''}
-                          </div>
-                        </button>
-                      ))
-                    ) : (
-                      <div className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-6 text-center text-sm text-slate-500">
-                        No existen coincidencias
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-
-              <div className="space-y-3">
-                <Label className="text-xs font-bold uppercase tracking-wide text-slate-700">
-                  Datos de facturación
-                </Label>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setBillingMode('PACIENTE')}
-                    className={`rounded-2xl border p-4 text-left transition ${
-                      billingMode === 'PACIENTE'
-                        ? 'border-primary bg-primary/5'
-                        : 'border-slate-200 bg-white'
-                    }`}
-                  >
-                    <div className="font-semibold">A nombre del paciente</div>
-                    <div className="text-xs text-slate-500 mt-1">
-                      Usa los datos del paciente seleccionado
+                          <span className="font-medium text-slate-700">
+                            {test.pickerLabel || getOrderPickerTestLabel(test)}
+                          </span>
+                          <span className="font-semibold text-slate-800">
+                            ${Number(test.subtotalOriginal || 0).toFixed(2)}
+                          </span>
+                        </div>
+                      ))}
                     </div>
-                  </button>
+                  </section>
 
-                  <button
-                    type="button"
-                    onClick={() => setBillingMode('CONSUMIDOR_FINAL')}
-                    className={`rounded-2xl border p-4 text-left transition ${
-                      billingMode === 'CONSUMIDOR_FINAL'
-                        ? 'border-primary bg-primary/5'
-                        : 'border-slate-200 bg-white'
-                    }`}
-                  >
-                    <div className="font-semibold">Consumidor final</div>
-                    <div className="text-xs text-slate-500 mt-1">
-                      Usa datos estándar de consumidor final
+                  <section className="rounded-2xl border border-slate-200 bg-white p-5 space-y-5">
+                    <div>
+                      <h3 className="font-semibold text-slate-900">Descuento global</h3>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Se aplica una sola vez sobre el subtotal completo de la orden.
+                      </p>
                     </div>
-                  </button>
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setBillingMode('OTRO');
-                      setBillingCustomerId(null);
-                      setBillingFoundMessage('');
-                      setBillingForm({
-                        tipo_identificacion: 'CEDULA',
-                        identificacion: '',
-                        nombres: '',
-                        direccion: '',
-                        telefono: '',
-                        email: '',
-                      });
-                    }}
-                    className={`rounded-2xl border p-4 text-left transition ${
-                      billingMode === 'OTRO'
-                        ? 'border-primary bg-primary/5'
-                        : 'border-slate-200 bg-white'
-                    }`}
-                  >
-                    <div className="font-semibold">Otro cliente</div>
-                    <div className="text-xs text-slate-500 mt-1">
-                      Buscar por identificación o registrar uno nuevo
-                    </div>
-                  </button>
-                </div>
-
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-4">
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    <div className="space-y-2">
-                      <Label className="font-semibold text-xs uppercase tracking-wider">
-                        Tipo de identificación
-                      </Label>
+                    <div className="grid grid-cols-1 gap-3 sm:grid-cols-[180px_1fr]">
                       <Select
-                        value={billingForm.tipo_identificacion}
-                        onValueChange={(v: BillingIdType) => {
-                          setBillingCustomerId(null);
-                          setBillingFoundMessage('');
-                          setBillingForm((f) => ({
-                            ...f,
-                            tipo_identificacion: v,
-                            identificacion: v === 'CONSUMIDOR_FINAL' ? '9999999999999' : '',
-                          }));
+                        value={globalDiscountType}
+                        onValueChange={(value: GlobalDiscountType) => {
+                          setGlobalDiscountType(value);
+                          setGlobalDiscount('');
                         }}
-                        disabled={billingMode !== 'OTRO'}
                       >
-                        <SelectTrigger className="bg-white">
+                        <SelectTrigger className="h-12 rounded-xl bg-white">
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="CEDULA">Cédula</SelectItem>
-                          <SelectItem value="RUC">RUC</SelectItem>
-                          <SelectItem value="PASAPORTE">Pasaporte</SelectItem>
-                          <SelectItem value="CONSUMIDOR_FINAL">Consumidor final</SelectItem>
+                          <SelectItem value="VALUE">Valor ($)</SelectItem>
+                          <SelectItem value="PERCENT">Porcentaje (%)</SelectItem>
                         </SelectContent>
                       </Select>
-                    </div>
 
-                    <div className="space-y-2">
-                      <Label className="font-semibold text-xs uppercase tracking-wider">
-                        Identificación
-                      </Label>
-                      <div className="relative">
-                        <Input
-                          value={billingForm.identificacion}
-                          onChange={(e) =>
-                            setBillingForm((f) => ({
-                              ...f,
-                              identificacion: e.target.value,
-                            }))
-                          }
-                          onBlur={() => {
-                            if (billingMode === 'OTRO') {
-                              buscarClienteFacturacion(
-                                billingForm.identificacion,
-                                billingForm.tipo_identificacion
-                              );
-                            }
-                          }}
-                          placeholder="Ingrese la identificación"
-                          disabled={billingMode !== 'OTRO'}
-                          className="bg-white pr-10"
-                        />
-                        {billingLookupLoading && (
-                          <Loader2 className="w-4 h-4 animate-spin absolute right-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                        )}
-                      </div>
-                      {billingMode === 'OTRO' && (
-                        <div className="text-xs text-slate-500">
-                          Al salir del campo se buscará en clientes de facturación.
-                        </div>
-                      )}
-                    </div>
-                  </div>
-
-                  {billingFoundMessage && (
-                    <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-700">
-                      {billingFoundMessage}
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-1 gap-4">
-                    <div className="space-y-2">
-                      <Label className="font-semibold text-xs uppercase tracking-wider">
-                        Nombres / Razón social
-                      </Label>
-                      <Input
-                        value={billingForm.nombres}
-                        onChange={(e) =>
-                          setBillingForm((f) => ({ ...f, nombres: e.target.value }))
-                        }
-                        placeholder="Nombres completos o razón social"
-                        disabled={billingMode === 'PACIENTE' || billingMode === 'CONSUMIDOR_FINAL'}
-                        className="bg-white"
-                      />
-                    </div>
-
-                    <div className="space-y-2">
-                      <Label className="font-semibold text-xs uppercase tracking-wider">
-                        Dirección
-                      </Label>
-                      <Textarea
-                        value={billingForm.direccion}
-                        onChange={(e) =>
-                          setBillingForm((f) => ({ ...f, direccion: e.target.value }))
-                        }
-                        placeholder="Dirección del cliente de facturación"
-                        rows={2}
-                        disabled={billingMode === 'PACIENTE' || billingMode === 'CONSUMIDOR_FINAL'}
-                        className="bg-white"
-                      />
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      <div className="space-y-2">
-                        <Label className="font-semibold text-xs uppercase tracking-wider">
-                          Teléfono
-                        </Label>
-                        <Input
-                          value={billingForm.telefono}
-                          onChange={(e) =>
-                            setBillingForm((f) => ({ ...f, telefono: e.target.value }))
-                          }
-                          placeholder="0999999999"
-                          disabled={billingMode === 'PACIENTE' || billingMode === 'CONSUMIDOR_FINAL'}
-                          className="bg-white"
-                        />
-                      </div>
-
-                      <div className="space-y-2">
-                        <Label className="font-semibold text-xs uppercase tracking-wider">
-                          Email
-                        </Label>
-                        <Input
-                          type="email"
-                          value={billingForm.email}
-                          onChange={(e) =>
-                            setBillingForm((f) => ({ ...f, email: e.target.value }))
-                          }
-                          placeholder="correo@ejemplo.com"
-                          disabled={billingMode === 'PACIENTE' || billingMode === 'CONSUMIDOR_FINAL'}
-                          className="bg-white"
-                        />
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                <div className="flex items-center justify-between gap-3">
-                  <Label className="text-xs font-bold uppercase tracking-wide text-slate-700">
-                    Médico solicitante (opcional)
-                  </Label>
-
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="rounded-xl"
-                    onClick={openCreateDoctor}
-                  >
-                    <Plus className="w-4 h-4 mr-2" />
-                    Nuevo médico
-                  </Button>
-                </div>
-
-                <Select
-                  value={selectedDoctor || '__none__'}
-                  onValueChange={(value) => setSelectedDoctor(value === '__none__' ? '' : value)}
-                >
-                  <SelectTrigger className="h-12 rounded-xl border-slate-200 bg-white shadow-sm">
-                    <SelectValue placeholder="Seleccione un médico" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__none__">Sin médico</SelectItem>
-                    {doctors.map((doctor) => (
-                      <SelectItem key={doctor.id} value={doctor.id}>
-                        {doctor.nombre}
-                        {doctor.especialidad ? ` — ${doctor.especialidad}` : ''}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
-                  Este campo es opcional. Puede registrar la orden sin médico asignado.
-                </div>
-              </div>
-
-              <div className="space-y-3">
-                <Label className="text-xs font-bold uppercase tracking-wide text-slate-700">
-                  Seleccionar pruebas
-                </Label>
-
-                <div className="relative">
-                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
-                  <Input
-                    className="pl-10 h-12 rounded-xl border-slate-200 bg-white shadow-sm"
-                    placeholder="Buscar prueba o parámetro..."
-                    value={testSearch}
-                    onChange={(e) => setTestSearch(e.target.value)}
-                  />
-                </div>
-
-                <div className="rounded-2xl border border-slate-200 bg-slate-50 p-2 max-h-72 overflow-y-auto space-y-2">
-                  {filteredTestsForPicker.length > 0 ? (
-                    filteredTestsForPicker.map((t) => {
-                      const isSelected = selectedTests.includes(t.id);
-                      const parametros = getParametrosPruebaOrdenados(t);
-
-                      return (
-                        <HoverCard key={t.id} openDelay={120} closeDelay={80}>
-                          <HoverCardTrigger asChild>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setSelectedTests((prev) =>
-                                  prev.includes(t.id)
-                                    ? prev.filter((id) => id !== t.id)
-                                    : [...prev, t.id]
-                                );
-                              }}
-                              className={`w-full rounded-xl border px-4 py-3 text-left transition ${
-                                isSelected
-                                  ? 'border-blue-500 bg-blue-50'
-                                  : 'border-slate-200 bg-white hover:border-blue-300 hover:bg-blue-50/40'
-                              }`}
-                            >
-                              <div className="flex items-start justify-between gap-4">
-                                <div className="flex items-start gap-3">
-                                  <div
-                                    className={`mt-1 h-5 w-5 rounded-md border flex items-center justify-center ${
-                                      isSelected
-                                        ? 'border-blue-600 bg-blue-600 text-white'
-                                        : 'border-slate-300 bg-white'
-                                    }`}
-                                  >
-                                    {isSelected && <span className="text-xs">✓</span>}
-                                  </div>
-
-                                  <div>
-                                    <div className="font-semibold text-slate-800">{t.name}</div>
-
-                                    <div className="text-sm text-slate-500">
-                                      IVA {Number(t.porcentaje_iva || 0).toFixed(2)}%
-                                    </div>
-
-                                    <div className="mt-1 text-xs text-slate-400">
-                                      {parametros.length > 0
-                                        ? `${parametros.length} parámetro${parametros.length === 1 ? '' : 's'}`
-                                        : 'Sin parámetros configurados'}
-                                    </div>
-                                  </div>
-                                </div>
-
-                                <div className="text-sm font-bold text-slate-700">
-                                  ${Number(t.price || 0).toFixed(2)}
-                                </div>
-                              </div>
-                            </button>
-                          </HoverCardTrigger>
-
-                          <HoverCardContent className="w-[340px] rounded-2xl border-slate-200 p-4 shadow-xl">
-                            <div className="space-y-3">
-                              <div>
-                                <div className="font-semibold text-slate-800">{t.name}</div>
-
-                                {String(t.description || '').trim() && (
-                                  <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-xs leading-5 text-slate-600">
-                                    {t.description}
-                                  </div>
-                                )}
-
-                                <div className="mt-2 text-xs text-slate-500">
-                                  Parámetros configurados para esta prueba
-                                </div>
-                              </div>
-
-                              {parametros.length > 0 ? (
-                                <div className="max-h-64 overflow-y-auto space-y-2">
-                                  {parametros.map((param: any, index: number) => (
-                                    <div
-                                      key={param.id}
-                                      className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2"
-                                    >
-                                      <div className="text-sm font-medium text-slate-800">
-                                        {index + 1}. {param.name}
-                                      </div>
-
-                                      <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
-                                        <span className="rounded-full bg-white px-2 py-0.5 border">
-                                          Tipo: {param.result_type || '—'}
-                                        </span>
-
-                                        {param.unit && (
-                                          <span className="rounded-full bg-white px-2 py-0.5 border">
-                                            Unidad: {param.unit}
-                                          </span>
-                                        )}
-                                      </div>
-                                    </div>
-                                  ))}
-                                </div>
-                              ) : (
-                                <div className="rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-4 text-sm text-slate-500">
-                                  Esta prueba no tiene parámetros registrados.
-                                </div>
-                              )}
-                            </div>
-                          </HoverCardContent>
-                        </HoverCard>
-                      );
-                    })
-                  ) : (
-                    <div className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-6 text-center text-sm text-slate-500">
-                      No existen coincidencias
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {selectedTestsSummary.length > 0 && (
-                <div className="rounded-2xl border border-primary/10 bg-primary/5 p-4 space-y-4">
-                  <div className="flex justify-between text-sm">
-                    <span className="font-semibold text-primary italic">
-                      {selectedTestsSummary.length} pruebas seleccionadas
-                    </span>
-                    <span className="font-semibold">
-                      Subtotal original: ${resumenTotales.subtotalOriginal.toFixed(2)}
-                    </span>
-                  </div>
-
-                  <div className="space-y-3">
-                    {selectedTestsSummary.map((t) => (
-                      <div
-                        key={`${t.id}-${t.totalLinea}`}
-                        className="rounded-xl border border-white/70 bg-white/80 p-3 space-y-2"
-                      >
-                        <div className="flex items-center justify-between gap-3">
-                          <div>
-                            <div className="font-semibold text-slate-800">{t.name}</div>
-                            <div className="text-xs text-slate-500">
-                              IVA {Number(t.porcentaje_iva || 0).toFixed(2)}%
-                            </div>
-                          </div>
-
-                          <div className="text-sm font-bold text-slate-700">
-                            ${Number(t.subtotalOriginal || 0).toFixed(2)}
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          <div className="space-y-1">
-                            <Label className="text-[11px] font-semibold uppercase tracking-wider">
-                              Descuento de esta prueba
-                            </Label>
-                            <Input
-                              type="number"
-                              step="0.01"
-                              min="0"
-                              max={Number(t.subtotalOriginal || 0)}
-                              value={testDiscounts[t.id] || ''}
-                              onChange={(e) =>
-                                setTestDiscounts((prev) => ({
-                                  ...prev,
-                                  [t.id]: e.target.value,
-                                }))
-                              }
-                              placeholder="0.00"
-                              className="bg-white"
-                            />
-                          </div>
-
-                          <div className="rounded-lg border bg-slate-50 px-3 py-2 text-sm space-y-1">
-                            <div className="flex justify-between">
-                              <span>Descuento aplicado</span>
-                              <span>${Number(t.descuentoTotal || 0).toFixed(2)}</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span>Base imponible</span>
-                              <span>${Number(t.subtotal || 0).toFixed(2)}</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span>IVA</span>
-                              <span>${Number(t.valorIva || 0).toFixed(2)}</span>
-                            </div>
-                            <div className="flex justify-between font-semibold text-primary border-t pt-1">
-                              <span>Total línea</span>
-                              <span>${Number(t.totalLinea || 0).toFixed(2)}</span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-
-                  <div className="rounded-xl border bg-white p-4 space-y-3">
-                    <div className="space-y-2">
-                      <Label className="font-semibold text-xs uppercase tracking-wider">
-                        Descuento global adicional
-                      </Label>
                       <Input
                         type="number"
-                        step="0.01"
                         min="0"
+                        max={globalDiscountType === 'PERCENT' ? 100 : undefined}
+                        step="0.01"
                         value={globalDiscount}
                         onChange={(e) => setGlobalDiscount(e.target.value)}
-                        placeholder="0.00"
-                        className="bg-white"
+                        placeholder={globalDiscountType === 'PERCENT' ? '0.00 %' : '0.00'}
+                        className="h-12 rounded-xl bg-white"
                       />
                     </div>
 
-                    <div className="flex justify-between text-sm">
-                      <span>Subtotal original</span>
-                      <span>${resumenTotales.subtotalOriginal.toFixed(2)}</span>
+                    <div className="rounded-2xl bg-slate-50 p-4 text-sm space-y-2">
+                      <div className="flex justify-between gap-4">
+                        <span className="text-slate-500">Subtotal original</span>
+                        <span className="font-medium">
+                          ${resumenTotales.subtotalOriginal.toFixed(2)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between gap-4">
+                        <span className="text-slate-500">Descuento</span>
+                        <span className="font-medium text-emerald-700">
+                          -${resumenTotales.descuento.toFixed(2)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between gap-4">
+                        <span className="text-slate-500">Subtotal neto</span>
+                        <span className="font-medium">${resumenTotales.subtotal.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between gap-4">
+                        <span className="text-slate-500">IVA</span>
+                        <span className="font-medium">${resumenTotales.iva.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between gap-4 border-t border-slate-200 pt-3">
+                        <span className="font-bold text-slate-900">Total</span>
+                        <span className="text-xl font-black text-primary">
+                          ${resumenTotales.total.toFixed(2)}
+                        </span>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section className="rounded-2xl border border-slate-200 bg-white p-5 space-y-5">
+                    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                      <div>
+                        <h3 className="font-semibold text-slate-900">Pago</h3>
+                        <p className="mt-1 text-xs text-slate-500">
+                          Puede cobrar todo, registrar un abono o dejar la orden pendiente.
+                        </p>
+                      </div>
+
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="w-fit rounded-xl"
+                        onClick={() =>
+                          setInitialPaymentForm((form) => ({
+                            ...form,
+                            amount: resumenTotales.total.toFixed(2),
+                          }))
+                        }
+                        disabled={resumenTotales.total <= 0}
+                      >
+                        <Wallet className="mr-2 h-4 w-4" />
+                        Pagar total
+                      </Button>
                     </div>
 
-                    <div className="flex justify-between text-sm">
-                      <span>Descuento total</span>
-                      <span>${resumenTotales.descuento.toFixed(2)}</span>
-                    </div>
-
-                    <div className="flex justify-between text-sm">
-                      <span>Subtotal neto</span>
-                      <span>${resumenTotales.subtotal.toFixed(2)}</span>
-                    </div>
-
-                    <div className="flex justify-between text-sm">
-                      <span>IVA total</span>
-                      <span>${resumenTotales.iva.toFixed(2)}</span>
-                    </div>
-
-                    <div className="flex justify-between items-center border-t pt-2">
-                      <span className="text-sm font-bold text-primary">Total</span>
-                      <span className="text-xl font-display font-black text-primary">
-                        ${resumenTotales.total.toFixed(2)}
-                      </span>
-                    </div>
-                  </div>
-                </div>
-              )}
-              {selectedTestsSummary.length > 0 && (
-                <div className="space-y-3">
-                  <Label className="text-xs font-bold uppercase tracking-wide text-slate-700">
-                    Pago inicial (opcional)
-                  </Label>
-
-                  <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4 space-y-4">
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                       <div className="space-y-2">
-                        <Label className="font-semibold text-xs uppercase tracking-wider">
+                        <Label className="text-xs font-semibold uppercase tracking-wider">
                           Monto a pagar ahora
                         </Label>
                         <Input
@@ -2921,30 +3116,30 @@ export default function OrdersPage() {
                           max={resumenTotales.total}
                           value={initialPaymentForm.amount}
                           onChange={(e) =>
-                            setInitialPaymentForm((f) => ({
-                              ...f,
+                            setInitialPaymentForm((form) => ({
+                              ...form,
                               amount: e.target.value,
                             }))
                           }
                           placeholder="0.00"
-                          className="bg-white"
+                          className="h-12 rounded-xl"
                         />
                       </div>
 
                       <div className="space-y-2">
-                        <Label className="font-semibold text-xs uppercase tracking-wider">
+                        <Label className="text-xs font-semibold uppercase tracking-wider">
                           Método de pago
                         </Label>
                         <Select
                           value={initialPaymentForm.payment_method}
-                          onValueChange={(v) =>
-                            setInitialPaymentForm((f) => ({
-                              ...f,
-                              payment_method: v,
+                          onValueChange={(value) =>
+                            setInitialPaymentForm((form) => ({
+                              ...form,
+                              payment_method: value,
                             }))
                           }
                         >
-                          <SelectTrigger className="bg-white">
+                          <SelectTrigger className="h-12 rounded-xl bg-white">
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
@@ -2956,97 +3151,338 @@ export default function OrdersPage() {
                           </SelectContent>
                         </Select>
                       </div>
-                    </div>
 
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <div className="space-y-2">
-                        <Label className="font-semibold text-xs uppercase tracking-wider">
+                        <Label className="text-xs font-semibold uppercase tracking-wider">
                           Referencia
                         </Label>
                         <Input
                           value={initialPaymentForm.reference}
                           onChange={(e) =>
-                            setInitialPaymentForm((f) => ({
-                              ...f,
+                            setInitialPaymentForm((form) => ({
+                              ...form,
                               reference: e.target.value,
                             }))
                           }
                           placeholder="Voucher, transferencia, etc."
-                          className="bg-white"
+                          className="h-12 rounded-xl"
                         />
                       </div>
 
                       <div className="space-y-2">
-                        <Label className="font-semibold text-xs uppercase tracking-wider">
+                        <Label className="text-xs font-semibold uppercase tracking-wider">
                           Observación
                         </Label>
                         <Input
                           value={initialPaymentForm.notes}
                           onChange={(e) =>
-                            setInitialPaymentForm((f) => ({
-                              ...f,
+                            setInitialPaymentForm((form) => ({
+                              ...form,
                               notes: e.target.value,
                             }))
                           }
                           placeholder="Opcional"
-                          className="bg-white"
+                          className="h-12 rounded-xl"
                         />
                       </div>
                     </div>
 
-                    <div className="rounded-xl border bg-white p-4 text-sm space-y-2">
-                      <div className="flex justify-between">
-                        <span>Total de la orden</span>
-                        <span className="font-semibold">${resumenTotales.total.toFixed(2)}</span>
+                    <div className="grid grid-cols-3 gap-2 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-center">
+                      <div>
+                        <div className="text-[11px] uppercase text-slate-500">Total</div>
+                        <div className="mt-1 font-bold">${resumenTotales.total.toFixed(2)}</div>
                       </div>
-
-                      <div className="flex justify-between">
-                        <span>Pago inicial</span>
-                        <span className="font-semibold">
+                      <div>
+                        <div className="text-[11px] uppercase text-slate-500">Pago</div>
+                        <div className="mt-1 font-bold">
                           ${round2(Number(initialPaymentForm.amount || 0)).toFixed(2)}
-                        </span>
+                        </div>
                       </div>
-
-                      <div className="flex justify-between border-t pt-2">
-                        <span>Saldo pendiente</span>
-                        <span className="font-bold text-primary">
+                      <div>
+                        <div className="text-[11px] uppercase text-slate-500">Saldo</div>
+                        <div className="mt-1 font-bold text-primary">
                           $
                           {round2(
                             Math.max(
-                              resumenTotales.total - round2(Number(initialPaymentForm.amount || 0)),
+                              resumenTotales.total -
+                                round2(Number(initialPaymentForm.amount || 0)),
                               0
                             )
                           ).toFixed(2)}
-                        </span>
+                        </div>
+                      </div>
+                    </div>
+                  </section>
+
+                  <section className="rounded-2xl border border-slate-200 bg-white p-5 space-y-5">
+                    <div>
+                      <h3 className="font-semibold text-slate-900">Datos de facturación</h3>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Seleccione a nombre de quién se emitirá la factura cuando corresponda.
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
+                      <button
+                        type="button"
+                        onClick={() => setBillingMode('PACIENTE')}
+                        className={`rounded-2xl border p-4 text-left transition ${
+                          billingMode === 'PACIENTE'
+                            ? 'border-primary bg-primary/5'
+                            : 'border-slate-200 bg-white'
+                        }`}
+                      >
+                        <div className="font-semibold">Paciente</div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          Usar los datos del paciente
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setBillingMode('CONSUMIDOR_FINAL')}
+                        className={`rounded-2xl border p-4 text-left transition ${
+                          billingMode === 'CONSUMIDOR_FINAL'
+                            ? 'border-primary bg-primary/5'
+                            : 'border-slate-200 bg-white'
+                        }`}
+                      >
+                        <div className="font-semibold">Consumidor final</div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          Usar datos estándar
+                        </div>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setBillingMode('OTRO');
+                          setBillingCustomerId(null);
+                          setBillingFoundMessage('');
+                          setBillingForm({
+                            tipo_identificacion: 'CEDULA',
+                            identificacion: '',
+                            nombres: '',
+                            direccion: '',
+                            telefono: '',
+                            email: '',
+                          });
+                        }}
+                        className={`rounded-2xl border p-4 text-left transition ${
+                          billingMode === 'OTRO'
+                            ? 'border-primary bg-primary/5'
+                            : 'border-slate-200 bg-white'
+                        }`}
+                      >
+                        <div className="font-semibold">Otro cliente</div>
+                        <div className="mt-1 text-xs text-slate-500">
+                          Buscar o registrar datos
+                        </div>
+                      </button>
+                    </div>
+
+                    <div className="space-y-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label className="text-xs font-semibold uppercase tracking-wider">
+                            Tipo de identificación
+                          </Label>
+                          <Select
+                            value={billingForm.tipo_identificacion}
+                            onValueChange={(value: BillingIdType) => {
+                              setBillingCustomerId(null);
+                              setBillingFoundMessage('');
+                              setBillingForm((form) => ({
+                                ...form,
+                                tipo_identificacion: value,
+                                identificacion:
+                                  value === 'CONSUMIDOR_FINAL' ? '9999999999999' : '',
+                              }));
+                            }}
+                            disabled={billingMode !== 'OTRO'}
+                          >
+                            <SelectTrigger className="bg-white">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="CEDULA">Cédula</SelectItem>
+                              <SelectItem value="RUC">RUC</SelectItem>
+                              <SelectItem value="PASAPORTE">Pasaporte</SelectItem>
+                              <SelectItem value="CONSUMIDOR_FINAL">
+                                Consumidor final
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label className="text-xs font-semibold uppercase tracking-wider">
+                            Identificación
+                          </Label>
+                          <div className="relative">
+                            <Input
+                              value={billingForm.identificacion}
+                              onChange={(e) =>
+                                setBillingForm((form) => ({
+                                  ...form,
+                                  identificacion: e.target.value,
+                                }))
+                              }
+                              onBlur={() => {
+                                if (billingMode === 'OTRO') {
+                                  buscarClienteFacturacion(
+                                    billingForm.identificacion,
+                                    billingForm.tipo_identificacion
+                                  );
+                                }
+                              }}
+                              disabled={billingMode !== 'OTRO'}
+                              placeholder="Identificación"
+                              className="bg-white pr-10"
+                            />
+                            {billingLookupLoading && (
+                              <Loader2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 animate-spin text-slate-400" />
+                            )}
+                          </div>
+                        </div>
                       </div>
 
-                      {round2(Number(initialPaymentForm.amount || 0)) >= resumenTotales.total &&
-                        resumenTotales.total > 0 && (
-                          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs text-emerald-700">
-                            Con este pago la orden quedará completamente cancelada y se enviará a facturación electrónica.
-                          </div>
-                        )}
+                      {billingFoundMessage && (
+                        <div className="rounded-xl border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-700">
+                          {billingFoundMessage}
+                        </div>
+                      )}
+
+                      <div className="space-y-2">
+                        <Label className="text-xs font-semibold uppercase tracking-wider">
+                          Nombres / Razón social
+                        </Label>
+                        <Input
+                          value={billingForm.nombres}
+                          onChange={(e) =>
+                            setBillingForm((form) => ({ ...form, nombres: e.target.value }))
+                          }
+                          disabled={
+                            billingMode === 'PACIENTE' ||
+                            billingMode === 'CONSUMIDOR_FINAL'
+                          }
+                          className="bg-white"
+                        />
+                      </div>
+
+                      <div className="space-y-2">
+                        <Label className="text-xs font-semibold uppercase tracking-wider">
+                          Dirección
+                        </Label>
+                        <Textarea
+                          rows={2}
+                          value={billingForm.direccion}
+                          onChange={(e) =>
+                            setBillingForm((form) => ({ ...form, direccion: e.target.value }))
+                          }
+                          disabled={
+                            billingMode === 'PACIENTE' ||
+                            billingMode === 'CONSUMIDOR_FINAL'
+                          }
+                          className="bg-white"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
+                        <div className="space-y-2">
+                          <Label className="text-xs font-semibold uppercase tracking-wider">
+                            Teléfono
+                          </Label>
+                          <Input
+                            value={billingForm.telefono}
+                            onChange={(e) =>
+                              setBillingForm((form) => ({
+                                ...form,
+                                telefono: e.target.value,
+                              }))
+                            }
+                            disabled={
+                              billingMode === 'PACIENTE' ||
+                              billingMode === 'CONSUMIDOR_FINAL'
+                            }
+                            className="bg-white"
+                          />
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label className="text-xs font-semibold uppercase tracking-wider">
+                            Email
+                          </Label>
+                          <Input
+                            type="email"
+                            value={billingForm.email}
+                            onChange={(e) =>
+                              setBillingForm((form) => ({ ...form, email: e.target.value }))
+                            }
+                            disabled={
+                              billingMode === 'PACIENTE' ||
+                              billingMode === 'CONSUMIDOR_FINAL'
+                            }
+                            className="bg-white"
+                          />
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                  </section>
                 </div>
               )}
             </div>
 
-            <div className="shrink-0 border-t bg-white px-6 py-4">
-              <Button
-                onClick={handleCreate}
-                className="w-full h-14 rounded-2xl text-xl font-semibold gradient-clinical text-primary-foreground border-0 shadow-lg"
-                disabled={!selectedPatient || selectedTests.length === 0 || creating}
-              >
-                {creating ? (
-                  <>
-                    <Loader2 className="w-4 h-4 mr-2 animate-spin" />
-                    Generando...
-                  </>
+            <div className="shrink-0 border-t bg-white px-5 py-4 sm:px-7">
+              <div className="flex items-center justify-between gap-3">
+                {orderWizardStep > 1 ? (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="h-11 rounded-xl px-5"
+                    onClick={() =>
+                      setOrderWizardStep((orderWizardStep - 1) as OrderWizardStep)
+                    }
+                    disabled={creating}
+                  >
+                    Anterior
+                  </Button>
                 ) : (
-                  'Crear Orden'
+                  <div />
                 )}
-              </Button>
+
+                {orderWizardStep < 3 ? (
+                  <Button
+                    type="button"
+                    className="h-11 rounded-xl px-6 gradient-clinical text-primary-foreground border-0"
+                    onClick={() =>
+                      goToOrderWizardStep((orderWizardStep + 1) as OrderWizardStep)
+                    }
+                    disabled={
+                      (orderWizardStep === 1 && !selectedPatient) ||
+                      (orderWizardStep === 2 && selectedTests.length === 0)
+                    }
+                  >
+                    Siguiente
+                  </Button>
+                ) : (
+                  <Button
+                    type="button"
+                    onClick={handleCreate}
+                    className="h-11 rounded-xl px-7 gradient-clinical text-primary-foreground border-0 shadow-md"
+                    disabled={!selectedPatient || selectedTests.length === 0 || creating}
+                  >
+                    {creating ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Generando...
+                      </>
+                    ) : (
+                      'Finalizar orden'
+                    )}
+                  </Button>
+                )}
+              </div>
             </div>
           </div>
         </DialogContent>
