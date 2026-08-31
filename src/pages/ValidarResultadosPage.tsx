@@ -3,7 +3,6 @@ import { useParams } from 'react-router-dom';
 import {
   AlertTriangle,
   CheckCircle2,
-  FileCheck2,
   FileWarning,
   Loader2,
   QrCode,
@@ -28,6 +27,7 @@ type VerifyResponse = {
   ok?: boolean;
   exists?: boolean;
   valid?: boolean;
+  status?: string;
   record_valid?: boolean;
   file_checked?: boolean;
   file_matches?: boolean | null;
@@ -91,6 +91,7 @@ export default function ValidarResultadosPage() {
   const status = useMemo(() => {
     if (isPreview) return 'preview';
     if (!result?.exists) return 'invalid';
+    if (result?.status === 'PENDIENTE') return 'pending';
     if (result.file_checked && result.file_matches === false) return 'modified';
     if (result.valid && result.file_checked && result.file_matches === true) return 'verified';
     if (result.record_valid) return 'registered';
@@ -135,6 +136,12 @@ export default function ValidarResultadosPage() {
       text: 'Este QR pertenece a una vista previa y todavía no constituye una validación emitida.',
       box: 'border-amber-200 bg-amber-50 text-amber-800',
     },
+    pending: {
+      icon: Loader2,
+      title: 'Validación en proceso',
+      text: result?.message || 'El documento existe, pero su firma todavía se está finalizando. Intente nuevamente en unos segundos.',
+      box: 'border-amber-200 bg-amber-50 text-amber-800',
+    },
     registered: {
       icon: ShieldCheck,
       title: 'Código de validación auténtico',
@@ -172,8 +179,15 @@ export default function ValidarResultadosPage() {
       <div className="mx-auto max-w-xl">
         <Card className="overflow-hidden rounded-3xl border-slate-200 shadow-xl">
           <div className="border-b bg-white px-6 py-6 text-center">
-            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-slate-100">
-              <FileCheck2 className="h-7 w-7 text-slate-700" />
+            <div className="mx-auto mb-4 flex h-20 w-20 items-center justify-center">
+              <img
+                src={new URL(
+                  `${String(import.meta.env.BASE_URL || '/').replace(/\/?$/, '/') }validacion-resultados.png`,
+                  window.location.origin
+                ).toString()}
+                alt="Validación de resultados"
+                className="max-h-20 max-w-20 object-contain"
+              />
             </div>
             <h1 className="text-2xl font-bold text-slate-900">Validación de resultados</h1>
             <p className="mt-2 text-sm text-slate-500">

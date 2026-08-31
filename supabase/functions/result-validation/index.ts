@@ -87,6 +87,9 @@ serve(async (req) => {
 
       const orderId = String(body?.order_id || "").trim();
       if (!orderId) return json({ ok: false, message: "order_id es obligatorio" }, 400);
+      if (!appUrl) {
+        return json({ ok: false, message: "Falta configurar APP_URL en los secretos de la Edge Function" }, 500);
+      }
 
       const { data: order, error: orderError } = await admin
         .from("ordenes")
@@ -97,13 +100,27 @@ serve(async (req) => {
       if (orderError) throw orderError;
       if (!order) return json({ ok: false, message: "Orden no encontrada" }, 404);
 
-      const token = crypto.randomUUID();
       const now = new Date().toISOString();
 
-      const { error: upsertError } = await admin
+      // IMPORTANTE: el token del QR debe ser estable para una orden.
+      // Antes se generaba un token nuevo en cada prepare y el PDF anterior
+      // quedaba apuntando a un código que ya no existía.
+      const { data: existingValidation, error: existingValidationError } = await admin
         .from("resultado_validaciones")
-        .upsert(
-          {
+        .select("id, token, status, storage_path, pdf_sha256, firma_hmac_sha256, finalized_at")
+        .eq("order_id", orderId)
+        .maybeSingle();
+
+      if (existingValidationError) throw existingValidationError;
+
+      let token = String(existingValidation?.token || "").trim();
+
+      if (!token) {
+        token = crypto.randomUUID();
+
+        const { error: insertError } = await admin
+          .from("resultado_validaciones")
+          .insert({
             order_id: orderId,
             token,
             status: "PENDIENTE",
@@ -114,11 +131,19 @@ serve(async (req) => {
             finalized_at: null,
             revoked_at: null,
             updated_at: now,
-          },
-          { onConflict: "order_id" }
-        );
+          });
 
-      if (upsertError) throw upsertError;
+        if (insertError) throw insertError;
+      } else {
+        // No borramos la validación anterior en prepare. Si la generación nueva
+        // falla, el PDF previamente emitido continúa siendo verificable.
+        const { error: touchError } = await admin
+          .from("resultado_validaciones")
+          .update({ updated_at: now })
+          .eq("id", existingValidation.id);
+
+        if (touchError) throw touchError;
+      }
 
       const validationUrl = `${appUrl}/validar-resultados/${token}`;
 
@@ -127,6 +152,7 @@ serve(async (req) => {
         token,
         validation_url: validationUrl,
         order_code: order.code,
+        reused_token: !!existingValidation?.token,
       });
     }
 
@@ -241,6 +267,7 @@ serve(async (req) => {
         ok: true,
         exists: true,
         valid: recordValid && (fileMatches !== false),
+        status: validation.status,
         record_valid: recordValid,
         file_checked: fileChecked,
         file_matches: fileMatches,
@@ -250,6 +277,8 @@ serve(async (req) => {
         message:
           fileMatches === false
             ? "El archivo fue modificado: su SHA-256 no coincide con el PDF emitido por el laboratorio."
+            : validation.status === "PENDIENTE"
+            ? "La validación existe y está finalizando su firma. Intente nuevamente en unos segundos."
             : recordValid
             ? fileChecked
               ? "Documento auténtico e íntegro. El archivo coincide exactamente con el PDF emitido."

@@ -1345,20 +1345,44 @@ export default function ResultsPage() {
   };
 
 
+  const getValidationImagePublicUrl = () => {
+    const baseUrl = String(import.meta.env.BASE_URL || '/');
+    const normalizedBase = baseUrl.endsWith('/') ? baseUrl : `${baseUrl}/`;
+    return new URL(`${normalizedBase}validacion-resultados.png`, window.location.origin).toString();
+  };
+
   const loadValidationImageDataUrl = async () => {
     if (validationImageDataUrlRef.current) {
       return validationImageDataUrlRef.current;
     }
 
-    const response = await fetch('/validacion-resultados.png', { cache: 'force-cache' });
+    const imageUrl = getValidationImagePublicUrl();
+    const response = await fetch(imageUrl, { cache: 'no-cache' });
+
     if (!response.ok) {
-      throw new Error('No se pudo cargar public/validacion-resultados.png');
+      throw new Error(
+        `No se pudo cargar la imagen de validación (${response.status}). Verifique que exista public/validacion-resultados.png`
+      );
     }
 
     const blob = await response.blob();
+
+    if (!blob.type.startsWith('image/')) {
+      throw new Error(
+        `public/validacion-resultados.png no devolvió una imagen válida. Content-Type recibido: ${blob.type || 'desconocido'}`
+      );
+    }
+
     const dataUrl = await new Promise<string>((resolve, reject) => {
       const reader = new FileReader();
-      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onload = () => {
+        const result = String(reader.result || '');
+        if (!result.startsWith('data:image/')) {
+          reject(new Error('La imagen de validación no pudo convertirse a Data URL'));
+          return;
+        }
+        resolve(result);
+      };
       reader.onerror = () => reject(new Error('No se pudo leer la imagen de validación'));
       reader.readAsDataURL(blob);
     });
@@ -1367,12 +1391,65 @@ export default function ResultsPage() {
     return dataUrl;
   };
 
+  /**
+   * result-validation se despliega con --no-verify-jwt para permitir que
+   * la acción pública "verify" funcione al escanear el QR sin iniciar sesión.
+   *
+   * Sin embargo, "prepare" y "finalize" siguen protegidas dentro de la
+   * propia Edge Function. Por eso enviamos explícitamente el access_token
+   * de la sesión actual en Authorization.
+   */
+  const getResultValidationAuthHeaders = async () => {
+    const {
+      data: { session },
+      error: sessionError,
+    } = await supabase.auth.getSession();
+
+    if (sessionError) {
+      throw new Error(`No se pudo obtener la sesión actual: ${sessionError.message}`);
+    }
+
+    let activeSession = session;
+
+    // Si por cualquier motivo la sesión local no tiene token, intentamos
+    // renovarla una vez antes de considerar que el usuario quedó sin sesión.
+    if (!activeSession?.access_token) {
+      const {
+        data: { session: refreshedSession },
+        error: refreshError,
+      } = await supabase.auth.refreshSession();
+
+      if (refreshError) {
+        throw new Error(`La sesión expiró y no pudo renovarse: ${refreshError.message}`);
+      }
+
+      activeSession = refreshedSession;
+    }
+
+    if (!activeSession?.access_token) {
+      throw new Error('La sesión ha expirado. Vuelva a iniciar sesión.');
+    }
+
+    return {
+      Authorization: `Bearer ${activeSession.access_token}`,
+    };
+  };
+
   const prepareResultValidation = async (orderId: string) => {
+    const headers = await getResultValidationAuthHeaders();
+
     const { data, error } = await supabase.functions.invoke('result-validation', {
-      body: { action: 'prepare', order_id: orderId },
+      headers,
+      body: {
+        action: 'prepare',
+        order_id: orderId,
+      },
     });
 
-    if (error) throw error;
+    if (error) {
+      throw new Error(error.message || 'No se pudo contactar con result-validation');
+    }
+
     if (!data?.ok || !data?.token || !data?.validation_url) {
       throw new Error(data?.message || 'No se pudo preparar la validación del PDF');
     }
@@ -1388,7 +1465,10 @@ export default function ResultsPage() {
     token: string;
     storagePath: string;
   }) => {
+    const headers = await getResultValidationAuthHeaders();
+
     const { data, error } = await supabase.functions.invoke('result-validation', {
+      headers,
       body: {
         action: 'finalize',
         order_id: params.orderId,
@@ -1397,12 +1477,30 @@ export default function ResultsPage() {
       },
     });
 
-    if (error) throw error;
+    if (error) {
+      throw new Error(error.message || 'No se pudo contactar con result-validation');
+    }
+
     if (!data?.ok) {
       throw new Error(data?.message || 'No se pudo firmar el PDF generado');
     }
 
     return data;
+  };
+
+  const verifyResultValidationToken = async (token: string) => {
+    const { data, error } = await supabase.functions.invoke('result-validation', {
+      body: {
+        action: 'verify',
+        token,
+      },
+    });
+
+    if (error) {
+      throw new Error(error.message || 'No se pudo comprobar el QR recién generado');
+    }
+
+    return data || null;
   };
 
   const buildLivePdfPreviewPayload = async () => {
@@ -1811,9 +1909,12 @@ export default function ResultsPage() {
     }
 
     const previewValidationUrl = `${window.location.origin}/validar-resultados/vista-previa`;
-    const previewQrDataUrl = await buildQrDataUrl(
-      `${previewValidationUrl}?orden=${encodeURIComponent(orderData.code || '')}`
-    );
+    const [previewQrDataUrl, validationImageDataUrl] = await Promise.all([
+      buildQrDataUrl(
+        `${previewValidationUrl}?orden=${encodeURIComponent(orderData.code || '')}`
+      ),
+      loadValidationImageDataUrl(),
+    ]);
 
     const {
       pdfConfig,
@@ -1829,6 +1930,7 @@ export default function ResultsPage() {
         qrDataUrl: previewQrDataUrl,
         validationUrl: previewValidationUrl,
         token: 'VISTA-PREVIA',
+        validationImageDataUrl,
       }
     );
 
@@ -1850,7 +1952,15 @@ export default function ResultsPage() {
     };
   };
 
-  const generateAndUploadResultsPdf = async (orderId: string) => {
+  const generateAndUploadResultsPdf = async (
+    orderId: string,
+    options?: {
+      watermark?: boolean;
+      persistResultUrl?: boolean;
+    }
+  ) => {
+    const watermark = options?.watermark === true;
+    const persistResultUrl = options?.persistResultUrl !== false;
     const [{ data: configData, error: configError }, { data: orderData, error: orderError }] =
       await Promise.all([
         supabase.from('configuracion_laboratorio').select('*').maybeSingle(),
@@ -1909,11 +2019,14 @@ export default function ResultsPage() {
 
     const blob = generateResultsPDF(pdfOrder, pdfPatient, orderTests, orderResults, pdfConfig, {
       autoDownload: false,
+      watermark,
     });
 
     const safeCode = safeFileNamePart(orderData.code || orderId);
     const safePatient = safeFileNamePart(orderData.pacientes?.name || 'paciente');
-    const filePath = `ordenes/${orderId}/resultados_${safeCode}_${safePatient}.pdf`;
+    const generationStamp = Date.now();
+    const fileVariant = watermark ? 'marca_agua' : 'final';
+    const filePath = `ordenes/${orderId}/${preparedValidation.token}/resultados_${safeCode}_${safePatient}_${fileVariant}_${generationStamp}.pdf`;
 
     const { error: uploadError } = await supabase.storage
       .from('resultados')
@@ -1930,6 +2043,16 @@ export default function ResultsPage() {
       storagePath: filePath,
     });
 
+    // No entregamos el PDF hasta confirmar que el mismo token que quedó
+    // impreso en el QR ya está activo y firmado en el servidor.
+    const verification = await verifyResultValidationToken(preparedValidation.token);
+    if (!verification?.exists || !verification?.record_valid) {
+      throw new Error(
+        verification?.message ||
+          'El PDF fue generado, pero su QR todavía no quedó activo. No se entregará un documento inválido.'
+      );
+    }
+
     const { data: publicUrlData } = supabase.storage.from('resultados').getPublicUrl(filePath);
     const publicUrl = publicUrlData?.publicUrl;
 
@@ -1937,18 +2060,20 @@ export default function ResultsPage() {
       throw new Error('No se pudo obtener la URL pública del PDF');
     }
 
-    const resultIds = (orderData.resultados || []).map((r: any) => r.id).filter(Boolean);
+    if (persistResultUrl) {
+      const resultIds = (orderData.resultados || []).map((r: any) => r.id).filter(Boolean);
 
-    if (!resultIds.length) {
-      throw new Error('No se encontraron filas de resultados para actualizar la URL');
+      if (!resultIds.length) {
+        throw new Error('No se encontraron filas de resultados para actualizar la URL');
+      }
+
+      const { error: updateUrlError } = await supabase
+        .from('resultados')
+        .update({ resultados_url: publicUrl })
+        .in('id', resultIds);
+
+      if (updateUrlError) throw updateUrlError;
     }
-
-    const { error: updateUrlError } = await supabase
-      .from('resultados')
-      .update({ resultados_url: publicUrl })
-      .in('id', resultIds);
-
-    if (updateUrlError) throw updateUrlError;
 
     return publicUrl;
   };
@@ -2366,19 +2491,14 @@ export default function ResultsPage() {
           )}. Se descargará una copia con marca de agua.`
         );
 
-        const { blob, orderData: fullOrderData } =
-          await generateResultsPdfBlob(
-            orderId,
-            true
-          );
+        const watermarkUrl = await generateAndUploadResultsPdf(orderId, {
+          watermark: true,
+          persistResultUrl: false,
+        });
 
-        downloadBlob(
-          blob,
-          `resultados_${
-            fullOrderData.code ||
-            orderData.code ||
-            'resultados'
-          }_marca_agua.pdf`
+        await downloadPdfFromUrl(
+          watermarkUrl,
+          `${orderData.code || 'resultados'}_marca_agua`
         );
 
         toast.success(
@@ -2387,21 +2507,12 @@ export default function ResultsPage() {
         return;
       }
 
-      let pdfUrl =
-        orderData.resultados?.find(
-          (r: any) => !!r.resultados_url
-        )?.resultados_url || null;
-
-      if (!pdfUrl) {
-        toast.info(
-          'No existía PDF almacenado. Se generará y guardará ahora...'
-        );
-
-        pdfUrl =
-          await generateAndUploadResultsPdf(
-            orderId
-          );
-      }
+      // Siempre regeneramos y finalizamos antes de descargar. Así jamás
+      // reutilizamos un PDF antiguo cuyo QR pudiera corresponder a un token previo.
+      const pdfUrl = await generateAndUploadResultsPdf(orderId, {
+        watermark: false,
+        persistResultUrl: true,
+      });
 
       await downloadPdfFromUrl(
         pdfUrl,

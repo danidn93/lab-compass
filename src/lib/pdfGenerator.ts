@@ -1280,8 +1280,27 @@ function drawValidationImage(
 
   try {
     // El PNG viene desde public/validacion-resultados.png y conserva su transparencia.
-    // Se dibuja sin círculo, fondo, borde ni decoración adicional.
-    doc.addImage(image, format, x, y, maxW, maxH);
+    // Conservamos su proporción real para evitar que una imagen horizontal/vertical
+    // quede deformada o visualmente demasiado pequeña.
+    const props = doc.getImageProperties(image);
+    // La imagen suministrada mide 1302 × 1208 px. Nunca se fuerza a un cuadrado.
+    // Si jsPDF no puede leer las dimensiones por alguna razón, usamos esa proporción real.
+    const sourceW = Number(props?.width || 1302);
+    const sourceH = Number(props?.height || 1208);
+    const ratio = sourceW > 0 && sourceH > 0 ? sourceW / sourceH : 1302 / 1208;
+
+    let drawW = maxW;
+    let drawH = drawW / ratio;
+
+    if (drawH > maxH) {
+      drawH = maxH;
+      drawW = drawH * ratio;
+    }
+
+    const drawX = x + (maxW - drawW) / 2;
+    const drawY = y + (maxH - drawH) / 2;
+
+    doc.addImage(image, format, drawX, drawY, drawW, drawH);
   } catch {
     // Si la imagen no puede incrustarse, el QR y el texto de validación siguen visibles.
   }
