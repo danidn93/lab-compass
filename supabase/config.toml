@@ -1,2 +1,8 @@
 [functions.xades-signer]
 verify_jwt = false
+
+[functions.usuario-session]
+verify_jwt = false
+
+[functions.result-validation]
+verify_jwt = false

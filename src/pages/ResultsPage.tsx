@@ -1,5 +1,6 @@
 import React, { ReactNode, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabaseClient';
+import { useAuth } from '@/contexts/AuthContext';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -605,6 +606,7 @@ function groupPdfResultsByTestName(
 }
 
 export default function ResultsPage() {
+  const { sessionToken } = useAuth();
   const [orders, setOrders] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedOrderId, setSelectedOrderId] = useState<string | null>(null);
@@ -1392,51 +1394,27 @@ export default function ResultsPage() {
   };
 
   /**
-   * result-validation se despliega con --no-verify-jwt para permitir que
-   * la acción pública "verify" funcione al escanear el QR sin iniciar sesión.
-   *
-   * Sin embargo, "prepare" y "finalize" siguen protegidas dentro de la
-   * propia Edge Function. Por eso enviamos explícitamente el access_token
-   * de la sesión actual en Authorization.
+   * Tu proyecto NO usa Supabase Auth.
+   * result-validation se protege con el token propio almacenado en
+   * public.usuario_sesiones. El token real vive en AuthContext/localStorage
+   * y en PostgreSQL solo se guarda su SHA-256.
    */
-  const getResultValidationAuthHeaders = async () => {
-    const {
-      data: { session },
-      error: sessionError,
-    } = await supabase.auth.getSession();
+  const getResultValidationAuthHeaders = () => {
+    const token = String(sessionToken || '').trim();
 
-    if (sessionError) {
-      throw new Error(`No se pudo obtener la sesión actual: ${sessionError.message}`);
-    }
-
-    let activeSession = session;
-
-    // Si por cualquier motivo la sesión local no tiene token, intentamos
-    // renovarla una vez antes de considerar que el usuario quedó sin sesión.
-    if (!activeSession?.access_token) {
-      const {
-        data: { session: refreshedSession },
-        error: refreshError,
-      } = await supabase.auth.refreshSession();
-
-      if (refreshError) {
-        throw new Error(`La sesión expiró y no pudo renovarse: ${refreshError.message}`);
-      }
-
-      activeSession = refreshedSession;
-    }
-
-    if (!activeSession?.access_token) {
-      throw new Error('La sesión ha expirado. Vuelva a iniciar sesión.');
+    if (!token) {
+      throw new Error(
+        'No existe una sesión válida del laboratorio. Cierra sesión e inicia nuevamente.'
+      );
     }
 
     return {
-      Authorization: `Bearer ${activeSession.access_token}`,
+      'x-lab-session-token': token,
     };
   };
 
   const prepareResultValidation = async (orderId: string) => {
-    const headers = await getResultValidationAuthHeaders();
+    const headers = getResultValidationAuthHeaders();
 
     const { data, error } = await supabase.functions.invoke('result-validation', {
       headers,
@@ -1465,7 +1443,7 @@ export default function ResultsPage() {
     token: string;
     storagePath: string;
   }) => {
-    const headers = await getResultValidationAuthHeaders();
+    const headers = getResultValidationAuthHeaders();
 
     const { data, error } = await supabase.functions.invoke('result-validation', {
       headers,
