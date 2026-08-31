@@ -1140,6 +1140,47 @@ export default function ResultsPage() {
       .normalize('NFD')
       .replace(/[\u0300-\u036f]/g, '');
 
+
+  const isHemogramaCompleteTest = (test: any) =>
+    normalizeAutoCalcName(test?.name) === 'hemograma completo';
+
+  const isHemogramaBloodGroupPairParameter = (test: any, param: any) => {
+    if (!isHemogramaCompleteTest(test)) return false;
+
+    const name = normalizeAutoCalcName(param?.name);
+    return name === 'grupo sanguineo' || name === 'factor rh';
+  };
+
+  const getEffectiveTextValue = (param: any, rawValue: any) => {
+    const current = String(rawValue ?? '').trim();
+    const defaultValue = String(param?.valor_default ?? '').trim();
+
+    // Si el usuario no cambió el valor por defecto, se considera vacío
+    // para que no se guarde ni aparezca en la vista previa/PDF.
+    if (defaultValue && current === defaultValue) return '';
+
+    return current;
+  };
+
+  const isEntryValueEffectivelyEmpty = (
+    entry: Partial<EntryValueItem> | null | undefined,
+    param: any
+  ) => {
+    if (!entry) return true;
+
+    const resultType: ResultType = param?.result_type || 'numeric';
+    const observation = String(entry.observation ?? '').trim();
+
+    if (resultType === 'text') {
+      return (
+        getEffectiveTextValue(param, entry.value_text) === '' &&
+        observation === ''
+      );
+    }
+
+    return isEntryValueEmpty(entry);
+  };
+
   const getHemogramaAutomaticParameters = () => {
     const hemograma = (orderDetails?.tests || []).find(
       (test: any) => normalizeAutoCalcName(test?.name) === 'hemograma completo'
@@ -1270,7 +1311,7 @@ export default function ResultsPage() {
     }
 
     if (resultType === 'text') {
-      if (!item.value_text.trim()) return null;
+      if (!getEffectiveTextValue(param, item.value_text)) return null;
       return 'text';
     }
 
@@ -1441,7 +1482,7 @@ export default function ResultsPage() {
         if (!param) continue;
 
         const entryItem = entryValues[param.id] || emptyEntryValue();
-        if (isEntryValueEmpty(entryItem)) continue;
+        if (isEntryValueEffectivelyEmpty(entryItem, param)) continue;
 
         const resultType: ResultType = param.result_type || 'numeric';
         const range =
@@ -1474,7 +1515,7 @@ export default function ResultsPage() {
             status = isTrue ? 'positive' : 'negative';
           }
         } else {
-          value = String(entryItem.value_text ?? '').trim();
+          value = getEffectiveTextValue(param, entryItem.value_text);
           if (value) status = 'text';
         }
 
@@ -2146,7 +2187,7 @@ export default function ResultsPage() {
             const param = structureItem.parameter;
             const entryItem = entryValues[param.id] || emptyEntryValue();
 
-            if (isEntryValueEmpty(entryItem)) {
+            if (isEntryValueEffectivelyEmpty(entryItem, param)) {
               return null;
             }
 
@@ -2185,7 +2226,10 @@ export default function ResultsPage() {
             }
 
             if (resultType === 'text') {
-              const trimmedText = String(entryItem.value_text ?? '').trim();
+              const trimmedText = getEffectiveTextValue(
+                param,
+                entryItem.value_text
+              );
               if (trimmedText) {
                 value_text = trimmedText;
                 status = 'text';
@@ -2891,7 +2935,7 @@ export default function ResultsPage() {
                         )}
                         strategy={verticalListSortingStrategy}
                       >
-                        <div className="space-y-3 p-4">
+                        <div className="grid grid-cols-1 gap-3 p-4 md:grid-cols-2">
                           {(test.structure_items || []).map((structureItem: any) => {
                             const sortableId = `item:${getStructureItemLayoutId(
                               structureItem
@@ -2903,6 +2947,7 @@ export default function ResultsPage() {
                                 structureItem
                               )}`}
                               id={sortableId}
+                              className="md:col-span-2"
                             >
                               {(handleProps, dragging) => (
                                 <div
@@ -2942,6 +2987,11 @@ export default function ResultsPage() {
                           <SortableShell
                             key={`parameter:${test.layoutKey}:${param.id}`}
                             id={sortableId}
+                            className={
+                              isHemogramaBloodGroupPairParameter(test, param)
+                                ? 'md:col-span-1'
+                                : 'md:col-span-2'
+                            }
                           >
                             {(handleProps, dragging) => (
                               <div
@@ -2963,8 +3013,20 @@ export default function ResultsPage() {
                                   </span>
                                 </div>
 
-                                <div className="grid grid-cols-12 items-start gap-4">
-                              <div className="col-span-12 md:col-span-4">
+                                <div
+                                  className={
+                                    isHemogramaBloodGroupPairParameter(test, param)
+                                      ? 'grid grid-cols-1 items-start gap-3'
+                                      : 'grid grid-cols-12 items-start gap-4'
+                                  }
+                                >
+                              <div
+                                className={
+                                  isHemogramaBloodGroupPairParameter(test, param)
+                                    ? 'col-span-1'
+                                    : 'col-span-12 md:col-span-4'
+                                }
+                              >
                                 <Label className="text-sm font-bold text-slate-700">
                                   {param.name}
                                 </Label>
@@ -2984,7 +3046,13 @@ export default function ResultsPage() {
                                 </div>
                               </div>
 
-                              <div className="col-span-12 md:col-span-5">
+                              <div
+                                className={
+                                  isHemogramaBloodGroupPairParameter(test, param)
+                                    ? 'col-span-1'
+                                    : 'col-span-12 md:col-span-5'
+                                }
+                              >
                                 {resultType === 'numeric' && (
                                   <>
                                     <Input
@@ -3095,7 +3163,13 @@ export default function ResultsPage() {
                                 )}
                               </div>
 
-                              <div className="col-span-12 md:col-span-3">
+                              <div
+                                className={
+                                  isHemogramaBloodGroupPairParameter(test, param)
+                                    ? 'col-span-1'
+                                    : 'col-span-12 md:col-span-3'
+                                }
+                              >
                                 {status && (
                                   <Badge
                                     className={`w-full justify-center ${

@@ -155,6 +155,43 @@ function normalizeExamName(value: any) {
   return String(value || "").trim().toLowerCase();
 }
 
+function normalizePdfMatchName(value: any) {
+  return String(value ?? "")
+    .trim()
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function isHemogramaCompleteName(value: any) {
+  return normalizePdfMatchName(value) === "hemograma completo";
+}
+
+function isBloodGroupName(value: any) {
+  return normalizePdfMatchName(value) === "grupo sanguineo";
+}
+
+function isFactorRhName(value: any) {
+  return normalizePdfMatchName(value) === "factor rh";
+}
+
+function areHemogramaBloodPair(
+  testName: any,
+  first: PdfResultRenderItem | undefined,
+  second: PdfResultRenderItem | undefined
+) {
+  if (!isHemogramaCompleteName(testName) || !first || !second) return false;
+  if (isDividerDetail(first) || isDividerDetail(second)) return false;
+
+  const a = safeText((first as PdfResultDetail).parameterName);
+  const b = safeText((second as PdfResultDetail).parameterName);
+
+  return (
+    (isBloodGroupName(a) && isFactorRhName(b)) ||
+    (isFactorRhName(a) && isBloodGroupName(b))
+  );
+}
+
 function normalizeExamDescription(
   value: any,
   visibleDescription: boolean | null | undefined = true
@@ -1072,7 +1109,37 @@ function drawStructuredDetailsWithPagination(
 
   const orderedDetails = preserveDetailsOrder(details);
 
-  for (const item of orderedDetails) {
+  for (let itemIndex = 0; itemIndex < orderedDetails.length; itemIndex += 1) {
+    const item = orderedDetails[itemIndex];
+    const nextItem = orderedDetails[itemIndex + 1];
+
+    if (areHemogramaBloodPair(testName, item, nextItem)) {
+      const first = item as PdfResultDetail;
+      const second = nextItem as PdfResultDetail;
+
+      const rowHeight = Math.max(
+        getParameterRowHeight(safeText(first.observation), 79, false, doc),
+        getParameterRowHeight(safeText(second.observation), 79, false, doc)
+      );
+
+      const check = ensureSpaceForNextBlock(
+        doc,
+        y,
+        rowHeight + 1.5,
+        config,
+        patient,
+        testName,
+        testDescription,
+        visibleDescription
+      );
+
+      y = check.y;
+      y = drawHemogramaBloodPairRow(doc, first, second, 22, y, 166, false);
+      y += 1.5;
+      itemIndex += 1;
+      continue;
+    }
+
     if (isDividerDetail(item)) {
       const dividerText = safeText(item.texto || "DIVISOR");
       const dividerMetrics = getDividerBlockMetrics(
@@ -1556,6 +1623,39 @@ function drawParameterSingleLine(
   return nextY;
 }
 
+function drawHemogramaBloodPairRow(
+  doc: jsPDF,
+  first: PdfResultDetail,
+  second: PdfResultDetail,
+  x: number,
+  y: number,
+  width: number,
+  compact: boolean
+) {
+  const gap = compact ? 4 : 8;
+  const columnWidth = (width - gap) / 2;
+
+  const firstY = drawParameterSingleLine(
+    doc,
+    first,
+    x,
+    y,
+    columnWidth,
+    compact
+  );
+
+  const secondY = drawParameterSingleLine(
+    doc,
+    second,
+    x + columnWidth + gap,
+    y,
+    columnWidth,
+    compact
+  );
+
+  return Math.max(firstY, secondY);
+}
+
 function measureGroupedDetailsHeight(
   doc: jsPDF,
   details: PdfResultRenderItem[],
@@ -1841,11 +1941,29 @@ function drawGroupedDetails(
   y: number,
   width: number,
   compact: boolean,
-  rowGap = 0
+  rowGap = 0,
+  testName = ""
 ) {
   const orderedDetails = preserveDetailsOrder(details);
 
-  for (const item of orderedDetails) {
+  for (let itemIndex = 0; itemIndex < orderedDetails.length; itemIndex += 1) {
+    const item = orderedDetails[itemIndex];
+    const nextItem = orderedDetails[itemIndex + 1];
+
+    if (areHemogramaBloodPair(testName, item, nextItem)) {
+      y = drawHemogramaBloodPairRow(
+        doc,
+        item as PdfResultDetail,
+        nextItem as PdfResultDetail,
+        x,
+        y,
+        width,
+        compact
+      );
+      y += rowGap;
+      itemIndex += 1;
+      continue;
+    }
     if (isDividerDetail(item)) {
       const dividerLines = doc.splitTextToSize(
         (safeText(item.texto) || "DIVISOR").toUpperCase(),
@@ -1929,7 +2047,8 @@ function drawGroupedTestBlock(
       currentY,
       width,
       compact,
-      rowGap
+      rowGap,
+      test.name
     );
   } else {
     doc.setFont("times", "normal");
