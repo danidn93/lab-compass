@@ -23,6 +23,7 @@ import {
   FileStack,
 } from 'lucide-react';
 import { toast } from 'sonner';
+import QRCode from 'qrcode';
 
 import {
   DndContext,
@@ -620,6 +621,7 @@ export default function ResultsPage() {
   const [pdfPreviewLoading, setPdfPreviewLoading] = useState(false);
   const [pdfPreviewError, setPdfPreviewError] = useState<string | null>(null);
   const pdfPreviewUrlRef = useRef<string | null>(null);
+  const validationImageDataUrlRef = useRef<string | null>(null);
 
   const [search, setSearch] = useState('');
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -629,6 +631,10 @@ export default function ResultsPage() {
   const [testMoveSelections, setTestMoveSelections] = useState<
     Record<string, { position: RelativePosition; targetKey: string }>
   >({});
+
+  // Todos los exámenes se muestran cerrados inicialmente.
+  // La reubicación permanece en el encabezado, por lo que no hace falta abrirlos.
+  const [expandedTests, setExpandedTests] = useState<Record<string, boolean>>({});
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
@@ -1011,6 +1017,7 @@ export default function ResultsPage() {
     try {
       setSelectedOrderId(order.id);
       setEntryValues({});
+      setExpandedTests({});
       setResultDate(new Date().toISOString().split('T')[0]);
 
       const [
@@ -1126,19 +1133,124 @@ export default function ResultsPage() {
     return 'normal';
   };
 
+  const normalizeAutoCalcName = (value: any) =>
+    String(value ?? '')
+      .trim()
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '');
+
+  const getHemogramaAutomaticParameters = () => {
+    const hemograma = (orderDetails?.tests || []).find(
+      (test: any) => normalizeAutoCalcName(test?.name) === 'hemograma completo'
+    );
+
+    if (!hemograma) return null;
+
+    const parameters = (hemograma.structure_items || [])
+      .filter((item: any) => item?.item_type === 'parameter' && item?.parameter)
+      .map((item: any) => item.parameter);
+
+    const findParameter = (name: string) =>
+      parameters.find(
+        (param: any) => normalizeAutoCalcName(param?.name) === normalizeAutoCalcName(name)
+      ) || null;
+
+    const hematocrito = findParameter('Hematócrito');
+    const hematies = findParameter('Hematíes');
+    const hemoglobina = findParameter('Hemoglobina');
+
+    if (!hematocrito || !hematies || !hemoglobina) return null;
+
+    return { hematocrito, hematies, hemoglobina };
+  };
+
+  const calculateHemogramaValues = (
+    values: Record<string, EntryValueItem>
+  ): Record<string, EntryValueItem> => {
+    const params = getHemogramaAutomaticParameters();
+    if (!params) return values;
+
+    const rawHematocrito = String(
+      values[params.hematocrito.id]?.value_numeric ?? ''
+    ).trim();
+
+    const hematocrito = rawHematocrito === '' ? NaN : Number(rawHematocrito);
+
+    const hematiesValue = Number.isFinite(hematocrito)
+      ? String(Math.round(hematocrito * 110000))
+      : '';
+
+    const hemoglobinaValue = Number.isFinite(hematocrito)
+      ? String(Number(((hematocrito / 3) - 0.44).toFixed(2)))
+      : '';
+
+    const currentHematies = values[params.hematies.id] || emptyEntryValue();
+    const currentHemoglobina = values[params.hemoglobina.id] || emptyEntryValue();
+
+    if (
+      currentHematies.value_numeric === hematiesValue &&
+      currentHemoglobina.value_numeric === hemoglobinaValue
+    ) {
+      return values;
+    }
+
+    return {
+      ...values,
+      [params.hematies.id]: {
+        ...currentHematies,
+        value_numeric: hematiesValue,
+      },
+      [params.hemoglobina.id]: {
+        ...currentHemoglobina,
+        value_numeric: hemoglobinaValue,
+      },
+    };
+  };
+
+  const isHemogramaAutomaticParameter = (parameterId: string) => {
+    const params = getHemogramaAutomaticParameters();
+    if (!params) return false;
+
+    return (
+      String(parameterId) === String(params.hematies.id) ||
+      String(parameterId) === String(params.hemoglobina.id)
+    );
+  };
+
   const updateEntryValue = (
     parameterId: string,
     field: keyof EntryValueItem,
     value: string
   ) => {
-    setEntryValues(prev => ({
-      ...prev,
-      [parameterId]: {
-        ...(prev[parameterId] || emptyEntryValue()),
-        [field]: value,
-      },
-    }));
+    setEntryValues(prev => {
+      const next = {
+        ...prev,
+        [parameterId]: {
+          ...(prev[parameterId] || emptyEntryValue()),
+          [field]: value,
+        },
+      };
+
+      const params = getHemogramaAutomaticParameters();
+
+      if (
+        field === 'value_numeric' &&
+        params &&
+        String(parameterId) === String(params.hematocrito.id)
+      ) {
+        return calculateHemogramaValues(next);
+      }
+
+      return next;
+    });
   };
+
+  useEffect(() => {
+    if (!orderDetails) return;
+
+    setEntryValues(prev => calculateHemogramaValues(prev));
+  }, [orderDetails]);
 
   const getStatusPreview = (param: any): ResultStatus => {
     const item = entryValues[param.id] || emptyEntryValue();
@@ -1179,7 +1291,80 @@ export default function ResultsPage() {
     return true;
   };
 
-  const buildLivePdfPreviewPayload = () => {
+  const buildQrDataUrl = async (value: string) => {
+    return QRCode.toDataURL(value, {
+      width: 280,
+      margin: 1,
+      errorCorrectionLevel: 'M',
+      color: {
+        dark: '#111827',
+        light: '#FFFFFF',
+      },
+    });
+  };
+
+
+  const loadValidationImageDataUrl = async () => {
+    if (validationImageDataUrlRef.current) {
+      return validationImageDataUrlRef.current;
+    }
+
+    const response = await fetch('/validacion-resultados.png', { cache: 'force-cache' });
+    if (!response.ok) {
+      throw new Error('No se pudo cargar public/validacion-resultados.png');
+    }
+
+    const blob = await response.blob();
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(String(reader.result || ''));
+      reader.onerror = () => reject(new Error('No se pudo leer la imagen de validación'));
+      reader.readAsDataURL(blob);
+    });
+
+    validationImageDataUrlRef.current = dataUrl;
+    return dataUrl;
+  };
+
+  const prepareResultValidation = async (orderId: string) => {
+    const { data, error } = await supabase.functions.invoke('result-validation', {
+      body: { action: 'prepare', order_id: orderId },
+    });
+
+    if (error) throw error;
+    if (!data?.ok || !data?.token || !data?.validation_url) {
+      throw new Error(data?.message || 'No se pudo preparar la validación del PDF');
+    }
+
+    return {
+      token: String(data.token),
+      validationUrl: String(data.validation_url),
+    };
+  };
+
+  const finalizeResultValidation = async (params: {
+    orderId: string;
+    token: string;
+    storagePath: string;
+  }) => {
+    const { data, error } = await supabase.functions.invoke('result-validation', {
+      body: {
+        action: 'finalize',
+        order_id: params.orderId,
+        token: params.token,
+        storage_path: params.storagePath,
+      },
+    });
+
+    if (error) throw error;
+    if (!data?.ok) {
+      throw new Error(data?.message || 'No se pudo firmar el PDF generado');
+    }
+
+    return data;
+  };
+
+  const buildLivePdfPreviewPayload = async () => {
     if (!orderDetails || !pdfPreviewConfig) return null;
 
     const pdfConfig: PdfLabConfig = {
@@ -1203,11 +1388,26 @@ export default function ResultsPage() {
       birth_date: orderDetails.pacientes?.birth_date || null,
     };
 
+    const previewValidationUrl = `${window.location.origin}/validar-resultados/vista-previa`;
+    const [previewQrDataUrl, validationImageDataUrl] = await Promise.all([
+      buildQrDataUrl(
+        `${previewValidationUrl}?orden=${encodeURIComponent(orderDetails.code || '')}`
+      ),
+      loadValidationImageDataUrl(),
+    ]);
+
     const pdfOrder: PdfOrder = {
       code: orderDetails.code || '',
       accessKey: orderDetails.access_key || '',
       date: resultDate || orderDetails.created_at || '',
       created_at: resultDate || orderDetails.created_at || null,
+      validation: {
+        status: 'PREVIEW',
+        qrDataUrl: previewQrDataUrl,
+        validationUrl: previewValidationUrl,
+        token: 'VISTA-PREVIA',
+        validationImageDataUrl,
+      },
     };
 
     const visibleTests = compactTestsByPageGroup(orderDetails.tests || []).filter(
@@ -1338,12 +1538,12 @@ export default function ResultsPage() {
   useEffect(() => {
     if (!entryDialogOpen || !orderDetails || !pdfPreviewConfig) return;
 
-    const timer = window.setTimeout(() => {
+    const timer = window.setTimeout(async () => {
       try {
         setPdfPreviewLoading(true);
         setPdfPreviewError(null);
 
-        const payload = buildLivePdfPreviewPayload();
+        const payload = await buildLivePdfPreviewPayload();
         if (!payload) return;
 
         const blob = generateResultsPDF(
@@ -1383,7 +1583,11 @@ export default function ResultsPage() {
     };
   }, []);
 
-  const buildPdfPayloadFromOrderData = (configData: any, orderData: any) => {
+  const buildPdfPayloadFromOrderData = (
+    configData: any,
+    orderData: any,
+    validation?: PdfOrder['validation']
+  ) => {
     const pdfConfig: PdfLabConfig = {
       name: configData.name || 'LABORATORIO CLÍNICO',
       owner: configData.owner || '',
@@ -1415,6 +1619,7 @@ export default function ResultsPage() {
       accessKey: orderData.access_key || '',
       date: firstResultDate || orderData.created_at || '',
       created_at: firstResultDate || orderData.created_at || null,
+      validation,
     };
 
     const rawGroupedResults = groupPdfResultsByTestName(
@@ -1564,6 +1769,11 @@ export default function ResultsPage() {
       throw new Error('La orden no tiene resultados registrados');
     }
 
+    const previewValidationUrl = `${window.location.origin}/validar-resultados/vista-previa`;
+    const previewQrDataUrl = await buildQrDataUrl(
+      `${previewValidationUrl}?orden=${encodeURIComponent(orderData.code || '')}`
+    );
+
     const {
       pdfConfig,
       pdfPatient,
@@ -1572,7 +1782,13 @@ export default function ResultsPage() {
       orderResults,
     } = buildPdfPayloadFromOrderData(
       configData,
-      orderData
+      orderData,
+      {
+        status: 'PREVIEW',
+        qrDataUrl: previewQrDataUrl,
+        validationUrl: previewValidationUrl,
+        token: 'VISTA-PREVIA',
+      }
     );
 
     const blob = generateResultsPDF(
@@ -1635,8 +1851,20 @@ export default function ResultsPage() {
     if (!orderData) throw new Error('No se encontró la orden');
     if (!orderData.resultados?.length) throw new Error('La orden no tiene resultados registrados');
 
+    const preparedValidation = await prepareResultValidation(orderId);
+    const [validationQrDataUrl, validationImageDataUrl] = await Promise.all([
+      buildQrDataUrl(preparedValidation.validationUrl),
+      loadValidationImageDataUrl(),
+    ]);
+
     const { pdfConfig, pdfPatient, pdfOrder, orderTests, orderResults } =
-      buildPdfPayloadFromOrderData(configData, orderData);
+      buildPdfPayloadFromOrderData(configData, orderData, {
+        status: 'VALID',
+        qrDataUrl: validationQrDataUrl,
+        validationUrl: preparedValidation.validationUrl,
+        token: preparedValidation.token,
+        validationImageDataUrl,
+      });
 
     const blob = generateResultsPDF(pdfOrder, pdfPatient, orderTests, orderResults, pdfConfig, {
       autoDownload: false,
@@ -1654,6 +1882,12 @@ export default function ResultsPage() {
       });
 
     if (uploadError) throw uploadError;
+
+    await finalizeResultValidation({
+      orderId,
+      token: preparedValidation.token,
+      storagePath: filePath,
+    });
 
     const { data: publicUrlData } = supabase.storage.from('resultados').getPublicUrl(filePath);
     const publicUrl = publicUrlData?.publicUrl;
@@ -2461,6 +2695,7 @@ export default function ResultsPage() {
                     String(candidate.layoutKey) !== String(test.layoutKey)
                 );
 
+                const isExpanded = expandedTests[String(test.layoutKey)] === true;
 
                 return (
                   <div
@@ -2493,6 +2728,28 @@ export default function ResultsPage() {
                         </div>
 
                         <div className="flex flex-wrap items-center gap-3">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="bg-white"
+                            onClick={() =>
+                              setExpandedTests((prev) => ({
+                                ...prev,
+                                [String(test.layoutKey)]: !isExpanded,
+                              }))
+                            }
+                            aria-expanded={isExpanded}
+                            title={isExpanded ? 'Cerrar examen' : 'Abrir examen'}
+                          >
+                            {isExpanded ? (
+                              <ChevronUp className="mr-1.5 h-4 w-4" />
+                            ) : (
+                              <ChevronDown className="mr-1.5 h-4 w-4" />
+                            )}
+                            {isExpanded ? 'Cerrar' : 'Abrir'}
+                          </Button>
+
                           <label className="flex cursor-pointer items-center gap-2 rounded-lg border bg-white px-3 py-2 text-xs font-semibold text-slate-700">
                             <input
                               type="checkbox"
@@ -2619,6 +2876,7 @@ export default function ResultsPage() {
                       )}
                     </div>
 
+                    {isExpanded && (
                     <DndContext
                       sensors={sensors}
                       collisionDetection={closestCenter}
@@ -2728,20 +2986,36 @@ export default function ResultsPage() {
 
                               <div className="col-span-12 md:col-span-5">
                                 {resultType === 'numeric' && (
-                                  <Input
-                                    type="number"
-                                    step="any"
-                                    className="border-slate-200 bg-white"
-                                    placeholder="0.00"
-                                    value={item.value_numeric}
-                                    onChange={(e) =>
-                                      updateEntryValue(
-                                        param.id,
-                                        'value_numeric',
-                                        e.target.value
-                                      )
-                                    }
-                                  />
+                                  <>
+                                    <Input
+                                      type="number"
+                                      step="any"
+                                      className={`border-slate-200 ${
+                                        isHemogramaAutomaticParameter(param.id)
+                                          ? 'bg-slate-100 font-semibold text-slate-700'
+                                          : 'bg-white'
+                                      }`}
+                                      placeholder="0.00"
+                                      value={item.value_numeric}
+                                      readOnly={isHemogramaAutomaticParameter(param.id)}
+                                      tabIndex={
+                                        isHemogramaAutomaticParameter(param.id) ? -1 : undefined
+                                      }
+                                      onChange={(e) =>
+                                        updateEntryValue(
+                                          param.id,
+                                          'value_numeric',
+                                          e.target.value
+                                        )
+                                      }
+                                    />
+
+                                    {isHemogramaAutomaticParameter(param.id) && (
+                                      <p className="mt-1 text-[11px] font-medium text-blue-600">
+                                        Calculado automáticamente desde Hematócrito
+                                      </p>
+                                    )}
+                                  </>
                                 )}
 
                                 {resultType === 'boolean' && (
@@ -2859,6 +3133,7 @@ export default function ResultsPage() {
                         </div>
                       </SortableContext>
                     </DndContext>
+                    )}
                   </div>
                 );
               })}

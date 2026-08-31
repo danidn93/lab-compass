@@ -28,6 +28,7 @@ import Usuarios from "./pages/Usuarios.tsx";
 import DoctorsPage from "./pages/DoctorsPage.tsx";
 import OrdersByDoctorPage from "./pages/OrdersByDoctorPage.tsx";
 import ExamGroupsPage from "./pages/ExamGroupsPage.tsx";
+import ValidarResultadosPage from "./pages/ValidarResultadosPage.tsx";
 
 const queryClient = new QueryClient();
 
@@ -62,6 +63,8 @@ const App = () => (
           <Sonner />
           <BrowserRouter>
             <Routes>
+              <Route path="/validar-resultados" element={<ValidarResultadosPage />} />
+              <Route path="/validar-resultados/vista-previa" element={<ValidarResultadosPage />} />
               <Route path="/portal" element={<PatientPortalPage />} />
               <Route path="/admin/*" element={<AdminRoutes />} />
               <Route path="/" element={<HomePage />} />

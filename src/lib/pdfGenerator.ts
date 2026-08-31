@@ -26,6 +26,13 @@ export type PdfOrder = {
   accessKey?: string;
   date: string;
   created_at?: string | null;
+  validation?: {
+    status?: 'PREVIEW' | 'VALID';
+    qrDataUrl?: string | null;
+    validationUrl?: string | null;
+    token?: string | null;
+    validationImageDataUrl?: string | null;
+  } | null;
 };
 
 export type PdfResultType = "numeric" | "boolean" | "text";
@@ -777,8 +784,8 @@ function getFrameUsableBounds() {
   return {
     top:
       PAGE.frameTop + PAGE.innerPaddingTop,
-    bottom:
-      PAGE.frameBottom - PAGE.innerPaddingBottom,
+    // Reservamos siempre el área inferior para fecha, QR de validación, firma y sello.
+    bottom: PAGE.groupedContentBottom,
   };
 }
 
@@ -1192,38 +1199,128 @@ function drawSignatureBlock(
   }
 }
 
+function drawValidationImage(
+  doc: jsPDF,
+  imageDataUrl: string | null | undefined,
+  x: number,
+  y: number,
+  maxW: number,
+  maxH: number
+) {
+  const image = normalizeImageData(imageDataUrl);
+  const format = imageFormatFromBase64(image);
+  if (!image || !format) return;
+
+  try {
+    // El PNG viene desde public/validacion-resultados.png y conserva su transparencia.
+    // Se dibuja sin círculo, fondo, borde ni decoración adicional.
+    doc.addImage(image, format, x, y, maxW, maxH);
+  } catch {
+    // Si la imagen no puede incrustarse, el QR y el texto de validación siguen visibles.
+  }
+}
+
+function drawValidationBlock(doc: jsPDF, order: PdfOrder) {
+  const validation = order.validation;
+  if (!validation?.qrDataUrl) return;
+
+  const x = 77;
+  const y = 232;
+  const w = 57;
+  const h = 34;
+
+  doc.setFillColor(255, 255, 255);
+  doc.setDrawColor(170, 170, 170);
+  doc.setLineWidth(0.35);
+  doc.roundedRect(x, y, w, h, 1.2, 1.2, 'FD');
+
+  const qr = normalizeImageData(validation.qrDataUrl);
+  const qrFormat = imageFormatFromBase64(qr);
+
+  if (qr && qrFormat) {
+    try {
+      doc.addImage(qr, qrFormat, x + 3.2, y + 3.0, 22, 22);
+    } catch {
+      // Si por alguna razón no puede dibujarse, dejamos el recuadro de validación.
+    }
+  }
+
+  drawValidationImage(
+    doc,
+    validation.validationImageDataUrl,
+    x + 34.4,
+    y + 4.5,
+    15.5,
+    15.5
+  );
+
+  doc.setFont('helvetica', 'bold');
+  doc.setFontSize(5.5);
+  doc.setTextColor(65, 65, 65);
+  doc.text(
+    validation.status === 'PREVIEW' ? 'VISTA PREVIA · QR DE VALIDACIÓN' : 'DOCUMENTO VALIDABLE',
+    x + w / 2,
+    y + 28.0,
+    { align: 'center' }
+  );
+
+  const shortToken = safeText(validation.token).slice(0, 18);
+  if (shortToken) {
+    doc.setFont('courier', 'normal');
+    doc.setFontSize(4.8);
+    doc.setTextColor(95, 95, 95);
+    doc.text(shortToken, x + w / 2, y + 31.0, { align: 'center' });
+  }
+
+  if (validation.validationUrl) {
+    try {
+      doc.link(x, y, w, h, { url: validation.validationUrl });
+    } catch {
+      // ignorar
+    }
+  }
+}
+
 function drawFooter(
   doc: jsPDF,
   order: PdfOrder,
   config: PdfLabConfig,
   resultDate?: string | null
 ) {
-  doc.setFont("times", "bold");
-  doc.setFontSize(11);
-  doc.setTextColor(55, 55, 55);
-
-  doc.text(
-    "Atentamente.",
-    105,
-    PAGE.attentY,
-    { align: "center" }
-  );
-
-  doc.setFont("courier", "bold");
-  doc.setFontSize(14);
+  // Fecha a la izquierda.
+  doc.setFont('courier', 'bold');
+  doc.setFontSize(13);
   doc.setTextColor(50, 50, 50);
-
   doc.text(
-    formatDateSpanish(
-      resultDate ||
-        order.created_at ||
-        order.date
-    ),
+    formatDateSpanish(resultDate || order.created_at || order.date),
     20,
     PAGE.dateY
   );
 
+  // QR de validación en el centro, entre fecha y firma/sello.
+  drawValidationBlock(doc, order);
+
+  // Firma y sello a la derecha.
+  doc.setFont('times', 'bold');
+  doc.setFontSize(10);
+  doc.setTextColor(55, 55, 55);
+  doc.text('Atentamente.', 159, 228.5, { align: 'center' });
+
   drawSignatureBlock(doc, config);
+}
+
+function drawFooterOnEveryPage(
+  doc: jsPDF,
+  order: PdfOrder,
+  config: PdfLabConfig,
+  resultDate?: string | null
+) {
+  const totalPages = doc.getNumberOfPages();
+
+  for (let page = 1; page <= totalPages; page += 1) {
+    doc.setPage(page);
+    drawFooter(doc, order, config, resultDate);
+  }
 }
 
 /* =========================================================
@@ -2521,13 +2618,7 @@ function renderGroupedPage(
         (test) => test._result.date
       )
       .find(Boolean) || null;
-
-  drawFooter(
-    doc,
-    order,
-    config,
-    firstDate
-  );
+  // El footer se dibuja al final sobre todas las páginas.
 }
 
 /**
@@ -2694,13 +2785,7 @@ function renderSingleTestPage(
     doc.getNumberOfPages();
 
   doc.setPage(currentPage);
-
-  drawFooter(
-    doc,
-    order,
-    config,
-    result.date
-  );
+  // El footer se dibuja al final sobre todas las páginas.
 }
 
 
@@ -2947,13 +3032,7 @@ export function generateResultsPDF(
       130,
       { align: "center" }
     );
-
-    drawFooter(
-      doc,
-      order,
-      config,
-      order.created_at || order.date
-    );
+    // El footer se dibuja al final sobre todas las páginas.
   }
 
   if (options?.watermark) {
@@ -2962,6 +3041,14 @@ export function generateResultsPDF(
       config
     );
   }
+
+  // Fecha + QR de validación + firma/sello en TODAS las hojas, incluidas continuaciones.
+  drawFooterOnEveryPage(
+    doc,
+    order,
+    config,
+    order.created_at || order.date
+  );
 
   const blob = doc.output("blob");
 
