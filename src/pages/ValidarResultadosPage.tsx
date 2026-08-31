@@ -153,7 +153,7 @@ export default function ValidarResultadosPage() {
     verified: {
       icon: CheckCircle2,
       title: 'Documento auténtico e íntegro',
-      text: result?.message || 'El SHA-256 coincide exactamente con el PDF emitido por el laboratorio.',
+      text: result?.message || 'La huella coincide exactamente con el PDF emitido por el laboratorio.',
       box: 'border-emerald-200 bg-emerald-50 text-emerald-800',
     },
     modified: {
@@ -231,7 +231,7 @@ export default function ValidarResultadosPage() {
                   Comprobar que el archivo no fue editado
                 </div>
                 <p className="mb-4 text-xs leading-5 text-slate-500">
-                  Seleccione el PDF recibido. La comprobación calcula su SHA-256 en este dispositivo y
+                  Seleccione el PDF recibido. La comprobación calcula su huella en este dispositivo y
                   compara la huella con la registrada al emitir el documento.
                 </p>
 

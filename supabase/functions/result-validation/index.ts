@@ -396,7 +396,7 @@ serve(async (req) => {
           : "",
         message:
           fileMatches === false
-            ? "El archivo fue modificado: su SHA-256 no coincide con el PDF emitido por el laboratorio."
+            ? "El archivo fue modificado: su huella no coincide con el PDF emitido por el laboratorio."
             : revoked
               ? "La validación fue revocada."
               : validation.status === "PENDIENTE"
