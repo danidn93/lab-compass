@@ -480,7 +480,18 @@ const EXAM_SECTIONS: ExamSectionDefinition[] = [
   {
     key: 'ORINA', title: 'ORINA', column: 3,
     items: [
-      { label: 'Fís. Quím. Sedimento', aliases: ['FIS QUIM SEDIMENTO', 'FISICO QUIMICO SEDIMENTO', 'EXAMEN DE ORINA', 'ELEMENTAL Y MICROSCOPICO DE ORINA'] },
+      {
+        label: 'Fís. Quím. Sedimento',
+        aliases: [
+          'FIS QUIM SEDIMENTO',
+          'FISICO QUIMICO SEDIMENTO',
+          'FISICO QUIMICO DE ORINA',
+          'EXAMEN FISICO QUIMICO DE ORINA',
+          'EXAMEN FISICO QUIMICO DE ORINA COMPLETO',
+          'EXAMEN DE ORINA',
+          'ELEMENTAL Y MICROSCOPICO DE ORINA',
+        ],
+      },
       { label: 'Test de Embarazo', aliases: ['TEST DE EMBARAZO', 'PRUEBA DE EMBARAZO'] },
       { label: 'Depuración de Creatinina 24h', aliases: ['DEPURACION DE CREATININA 24H', 'CLEARANCE DE CREATININA'] },
     ],
@@ -506,32 +517,91 @@ function getExamCatalogPlacement(test: any): {
   label: string;
 } {
   const pickerLabel = getOrderPickerTestLabel(test);
-  const candidates = [
-    pickerLabel,
-    test?.name,
-    test?.description,
-    ...(Array.isArray(test?.parametros_prueba)
-      ? test.parametros_prueba.map((p: any) => p?.name)
-      : []),
-  ]
-    .map(normalizeExamText)
-    .filter(Boolean);
 
+  const normalizedName = normalizeExamText(test?.name);
+  const normalizedDescription = normalizeExamText(test?.description);
+
+  const parameters = Array.isArray(test?.parametros_prueba)
+    ? test.parametros_prueba.filter(Boolean)
+    : [];
+
+  /*
+   * IMPORTANTE:
+   *
+   * La identidad de una prueba se determina primero por el nombre/descripcion
+   * de la PRUEBA, nunca por cualquiera de sus parametros.
+   *
+   * Ejemplo del bug que esto evita:
+   * "Examen Fisico Quimico de Orina" contiene un parametro "Glucosa".
+   * Antes, "Glucosa" podia coincidir parcialmente con "Glucosa Ayunas"
+   * y el examen de orina terminaba mostrandose como "Glicemia (Ayunas)".
+   *
+   * Solo cuando existe EXACTAMENTE un parametro permitimos usar su nombre
+   * como candidato, porque en ese caso la interfaz muestra el parametro en
+   * lugar del nombre general de la prueba. Incluso ahi la coincidencia del
+   * parametro es ESTRICTA; nunca por substring.
+   */
+  const singleParameterName =
+    parameters.length === 1
+      ? normalizeExamText(parameters[0]?.name)
+      : '';
+
+  const exactCandidates = [
+    normalizedName,
+    normalizedDescription,
+    normalizeExamText(pickerLabel),
+    singleParameterName,
+  ].filter(Boolean);
+
+  const primaryCandidates = [
+    normalizedName,
+    normalizedDescription,
+  ].filter(Boolean);
+
+  // 1) Coincidencia exacta. Es la mas segura y siempre tiene prioridad.
   for (const section of EXAM_SECTIONS) {
     if (section.key === 'OTROS_EXAMENES') continue;
 
     for (let index = 0; index < section.items.length; index += 1) {
       const item = section.items[index];
-      const aliases = [item.label, ...(item.aliases || [])].map(normalizeExamText);
-      const matches = candidates.some((candidate) =>
+      const aliases = [item.label, ...(item.aliases || [])]
+        .map(normalizeExamText)
+        .filter(Boolean);
+
+      const exactMatch = exactCandidates.some((candidate) =>
+        aliases.some((alias) => candidate === alias)
+      );
+
+      if (exactMatch) {
+        return {
+          sectionKey: section.key,
+          sectionTitle: section.title,
+          column: section.column,
+          order: index,
+          label: item.label === 'HIV' ? 'HIV' : capitalizeExamName(item.label),
+        };
+      }
+    }
+  }
+
+  // 2) Coincidencia parcial SOLO contra nombre/descripcion de la prueba.
+  // Nunca usamos parametros aqui para evitar asociaciones cruzadas.
+  for (const section of EXAM_SECTIONS) {
+    if (section.key === 'OTROS_EXAMENES') continue;
+
+    for (let index = 0; index < section.items.length; index += 1) {
+      const item = section.items[index];
+      const aliases = [item.label, ...(item.aliases || [])]
+        .map(normalizeExamText)
+        .filter(Boolean);
+
+      const partialMatch = primaryCandidates.some((candidate) =>
         aliases.some((alias) =>
-          candidate === alias ||
-          (alias.length >= 5 && candidate.includes(alias)) ||
-          (candidate.length >= 5 && alias.includes(candidate))
+          alias.length >= 5 && candidate.includes(alias)
         )
       );
 
-      if (matches) {
+      if (partialMatch) {
         return {
           sectionKey: section.key,
           sectionTitle: section.title,
@@ -1660,7 +1730,7 @@ export default function OrdersPage() {
 
       if (orderError) throw orderError;
 
-      for (const summary of selectedTestsSummary) {
+      for (const [selectionIndex, summary] of selectedTestsSummary.entries()) {
         const porcentajeIva = round2(safeNumber(summary.porcentaje_iva, 0));
         const codigoPorcentajeIva = String(
           summary.codigo_porcentaje_iva || obtenerCodigoPorcentajeIva(porcentajeIva)
@@ -1678,6 +1748,8 @@ export default function OrdersPage() {
           subtotal_sin_impuesto: round2(safeNumber(summary.subtotal, 0)),
           valor_iva: round2(safeNumber(summary.valorIva, 0)),
           total_linea: round2(safeNumber(summary.totalLinea, 0)),
+          // Conserva exactamente el orden en que el usuario seleccionó las pruebas.
+          selection_order: selectionIndex,
         });
 
         if (detailError) throw detailError;

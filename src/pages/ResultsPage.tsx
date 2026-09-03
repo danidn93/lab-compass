@@ -1031,6 +1031,7 @@ export default function ResultsPage() {
           .select(`
             id,
             test_id,
+            selection_order,
             pruebas (
               id,
               name,
@@ -1058,6 +1059,9 @@ export default function ResultsPage() {
             )
           `)
           .eq('order_id', order.id)
+          // Primero respeta el orden seleccionado al crear la orden.
+          // id queda como desempate y compatibilidad con órdenes antiguas.
+          .order('selection_order', { ascending: true, nullsFirst: false })
           .order('id', { ascending: true }),
         supabase
           .from('configuracion_laboratorio')
